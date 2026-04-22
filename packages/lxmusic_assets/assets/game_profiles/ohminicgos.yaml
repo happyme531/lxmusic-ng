@@ -1,0 +1,27 @@
+{
+  "id": "ohminicgos",
+  "displayName": "七日世界",
+  "packageNameHints": [
+    "ohminicgos"
+  ],
+  "defaultLayoutId": "qrsj_piano24",
+  "sameKeyMinIntervalMs": 20,
+  "featureFlags": [],
+  "layouts": [
+    {
+      "layoutId": "qrsj_piano24",
+      "displayName": "24键钢琴",
+      "isDefault": true
+    }
+  ],
+  "variants": [
+    {
+      "id": "default",
+      "displayName": "默认",
+      "noteDurationMode": "none",
+      "availablePitchRange": null,
+      "replacePitchMap": {},
+      "sameKeyMinIntervalOverrideMs": null
+    }
+  ]
+}

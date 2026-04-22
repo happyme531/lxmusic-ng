@@ -1,0 +1,32 @@
+{
+  "id": "tmgp_djsy",
+  "displayName": "妄想山海",
+  "packageNameHints": [
+    "tmgp.djsy"
+  ],
+  "defaultLayoutId": "generic_piano36",
+  "sameKeyMinIntervalMs": 20,
+  "featureFlags": [],
+  "layouts": [
+    {
+      "layoutId": "generic_piano36",
+      "displayName": "36键钢琴",
+      "isDefault": true
+    },
+    {
+      "layoutId": "generic_3x7",
+      "displayName": "3x7",
+      "isDefault": false
+    }
+  ],
+  "variants": [
+    {
+      "id": "default",
+      "displayName": "默认",
+      "noteDurationMode": "none",
+      "availablePitchRange": null,
+      "replacePitchMap": {},
+      "sameKeyMinIntervalOverrideMs": null
+    }
+  ]
+}

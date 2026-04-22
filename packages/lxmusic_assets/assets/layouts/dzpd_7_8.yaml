@@ -1,0 +1,22 @@
+{
+  "id": "dzpd_7_8",
+  "algorithm": "procedural",
+  "metadata": {
+    "importedFrom": "legacy_gameProfile.js"
+  },
+  "params": {
+    "pitchRangeOrList": [
+      "C4",
+      "C6"
+    ],
+    "row": 2,
+    "column": 7,
+    "haveSemitone": false,
+    "rowLengthOverride": [
+      [
+        1,
+        8
+      ]
+    ]
+  }
+}

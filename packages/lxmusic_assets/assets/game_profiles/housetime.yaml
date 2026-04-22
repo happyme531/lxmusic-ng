@@ -1,0 +1,27 @@
+{
+  "id": "housetime",
+  "displayName": "宅时光",
+  "packageNameHints": [
+    "housetime"
+  ],
+  "defaultLayoutId": "dzpd_yinterleaved36",
+  "sameKeyMinIntervalMs": 20,
+  "featureFlags": [],
+  "layouts": [
+    {
+      "layoutId": "dzpd_yinterleaved36",
+      "displayName": "36键",
+      "isDefault": true
+    }
+  ],
+  "variants": [
+    {
+      "id": "default",
+      "displayName": "默认",
+      "noteDurationMode": "none",
+      "availablePitchRange": null,
+      "replacePitchMap": {},
+      "sameKeyMinIntervalOverrideMs": null
+    }
+  ]
+}

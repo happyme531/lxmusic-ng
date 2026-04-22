@@ -1,0 +1,37 @@
+{
+  "id": "party",
+  "displayName": "蛋仔派对",
+  "packageNameHints": [
+    "party"
+  ],
+  "defaultLayoutId": "dzpd_7_8",
+  "sameKeyMinIntervalMs": 20,
+  "featureFlags": [],
+  "layouts": [
+    {
+      "layoutId": "dzpd_7_8",
+      "displayName": "15键",
+      "isDefault": true
+    },
+    {
+      "layoutId": "dzpd_interleaved3x7",
+      "displayName": "21键",
+      "isDefault": false
+    },
+    {
+      "layoutId": "dzpd_yinterleaved36",
+      "displayName": "36键",
+      "isDefault": false
+    }
+  ],
+  "variants": [
+    {
+      "id": "default",
+      "displayName": "默认",
+      "noteDurationMode": "none",
+      "availablePitchRange": null,
+      "replacePitchMap": {},
+      "sameKeyMinIntervalOverrideMs": null
+    }
+  ]
+}

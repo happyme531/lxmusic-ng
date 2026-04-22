@@ -1,0 +1,18 @@
+{
+  "id": "yjwj_curved3x7",
+  "algorithm": "procedural",
+  "metadata": {
+    "importedFrom": "legacy_gameProfile.js"
+  },
+  "params": {
+    "pitchRangeOrList": [
+      "C3",
+      "B5"
+    ],
+    "row": 3,
+    "column": 7,
+    "haveSemitone": false,
+    "centerAngle": 0.07853981633974483,
+    "centerRadius": 100
+  }
+}

@@ -1,0 +1,90 @@
+id: generic_3x7_demo
+algorithm: explicit
+metadata:
+  displayName: 3x7 Demo
+keys:
+  - id: C4
+    pitch: 60
+    normX: 0.10
+    normY: 0.80
+  - id: D4
+    pitch: 62
+    normX: 0.23
+    normY: 0.80
+  - id: E4
+    pitch: 64
+    normX: 0.36
+    normY: 0.80
+  - id: F4
+    pitch: 65
+    normX: 0.49
+    normY: 0.80
+  - id: G4
+    pitch: 67
+    normX: 0.62
+    normY: 0.80
+  - id: A4
+    pitch: 69
+    normX: 0.75
+    normY: 0.80
+  - id: B4
+    pitch: 71
+    normX: 0.88
+    normY: 0.80
+  - id: C5
+    pitch: 72
+    normX: 0.10
+    normY: 0.50
+  - id: D5
+    pitch: 74
+    normX: 0.23
+    normY: 0.50
+  - id: E5
+    pitch: 76
+    normX: 0.36
+    normY: 0.50
+  - id: F5
+    pitch: 77
+    normX: 0.49
+    normY: 0.50
+  - id: G5
+    pitch: 79
+    normX: 0.62
+    normY: 0.50
+  - id: A5
+    pitch: 81
+    normX: 0.75
+    normY: 0.50
+  - id: B5
+    pitch: 83
+    normX: 0.88
+    normY: 0.50
+  - id: C6
+    pitch: 84
+    normX: 0.10
+    normY: 0.20
+  - id: D6
+    pitch: 86
+    normX: 0.23
+    normY: 0.20
+  - id: E6
+    pitch: 88
+    normX: 0.36
+    normY: 0.20
+  - id: F6
+    pitch: 89
+    normX: 0.49
+    normY: 0.20
+  - id: G6
+    pitch: 91
+    normX: 0.62
+    normY: 0.20
+  - id: A6
+    pitch: 93
+    normX: 0.75
+    normY: 0.20
+  - id: B6
+    pitch: 95
+    normX: 0.88
+    normY: 0.20
+

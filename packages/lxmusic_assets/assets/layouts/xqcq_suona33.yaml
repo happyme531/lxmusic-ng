@@ -1,0 +1,18 @@
+{
+  "id": "xqcq_suona33",
+  "algorithm": "procedural",
+  "metadata": {
+    "importedFrom": "legacy_gameProfile.js"
+  },
+  "params": {
+    "pitchRangeOrList": [
+      "C3",
+      "G5"
+    ],
+    "row": 1,
+    "column": 33,
+    "haveSemitone": true,
+    "semiToneHeightOffset": 1,
+    "semiToneWidth": 0
+  }
+}

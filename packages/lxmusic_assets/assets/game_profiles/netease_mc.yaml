@@ -1,0 +1,33 @@
+{
+  "id": "netease_mc",
+  "displayName": "我的世界",
+  "packageNameHints": [
+    "netease.mc",
+    "netease.x19"
+  ],
+  "defaultLayoutId": "generic_3x7",
+  "sameKeyMinIntervalMs": 20,
+  "featureFlags": [],
+  "layouts": [
+    {
+      "layoutId": "generic_3x7",
+      "displayName": "3x7",
+      "isDefault": true
+    },
+    {
+      "layoutId": "generic_piano36",
+      "displayName": "36键钢琴",
+      "isDefault": false
+    }
+  ],
+  "variants": [
+    {
+      "id": "default",
+      "displayName": "默认",
+      "noteDurationMode": "none",
+      "availablePitchRange": null,
+      "replacePitchMap": {},
+      "sameKeyMinIntervalOverrideMs": null
+    }
+  ]
+}

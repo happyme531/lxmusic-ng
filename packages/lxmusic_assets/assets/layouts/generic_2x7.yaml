@@ -1,0 +1,16 @@
+{
+  "id": "generic_2x7",
+  "algorithm": "procedural",
+  "metadata": {
+    "importedFrom": "legacy_gameProfile.js"
+  },
+  "params": {
+    "pitchRangeOrList": [
+      "C4",
+      "B5"
+    ],
+    "row": 2,
+    "column": 7,
+    "haveSemitone": false
+  }
+}

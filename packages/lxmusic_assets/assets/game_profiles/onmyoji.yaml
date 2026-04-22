@@ -1,0 +1,27 @@
+{
+  "id": "onmyoji",
+  "displayName": "阴阳师",
+  "packageNameHints": [
+    "onmyoji"
+  ],
+  "defaultLayoutId": "generic_3x7",
+  "sameKeyMinIntervalMs": 20,
+  "featureFlags": [],
+  "layouts": [
+    {
+      "layoutId": "generic_3x7",
+      "displayName": "3x7",
+      "isDefault": true
+    }
+  ],
+  "variants": [
+    {
+      "id": "default",
+      "displayName": "默认",
+      "noteDurationMode": "none",
+      "availablePitchRange": null,
+      "replacePitchMap": {},
+      "sameKeyMinIntervalOverrideMs": null
+    }
+  ]
+}

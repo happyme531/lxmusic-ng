@@ -1,0 +1,17 @@
+{
+  "id": "nshm_professional_suo_na",
+  "algorithm": "procedural",
+  "metadata": {
+    "importedFrom": "legacy_gameProfile.js"
+  },
+  "params": {
+    "pitchRangeOrList": [
+      "E3",
+      "B5"
+    ],
+    "row": 1,
+    "column": 32,
+    "haveSemitone": true,
+    "semiToneHeightOffset": 1
+  }
+}

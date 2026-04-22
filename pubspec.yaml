@@ -1,0 +1,14 @@
+name: lxmusic_ng_workspace
+publish_to: none
+
+environment:
+  sdk: ^3.11.0
+
+dev_dependencies:
+  lints: ^6.0.0
+
+workspace:
+  - apps/lxmusic_app
+  - apps/lxmusic_cli
+  - packages/lxmusic_assets
+  - packages/lxmusic_core

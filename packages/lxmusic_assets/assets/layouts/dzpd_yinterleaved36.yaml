@@ -1,0 +1,17 @@
+{
+  "id": "dzpd_yinterleaved36",
+  "algorithm": "procedural",
+  "metadata": {
+    "importedFrom": "legacy_gameProfile.js"
+  },
+  "params": {
+    "pitchRangeOrList": [
+      "C3",
+      "B5"
+    ],
+    "row": 3,
+    "column": 12,
+    "haveSemitone": true,
+    "semiToneHeightOffset": 0.35
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "id": "tmgp_jx3m",
+  "displayName": "剑网3",
+  "packageNameHints": [
+    "tmgp.jx3m"
+  ],
+  "defaultLayoutId": "mhls_curved3x7",
+  "sameKeyMinIntervalMs": 20,
+  "featureFlags": [],
+  "layouts": [
+    {
+      "layoutId": "mhls_curved3x7",
+      "displayName": "21键(弧形)",
+      "isDefault": true
+    },
+    {
+      "layoutId": "jw3_sloped3x7",
+      "displayName": "21键(斜线)",
+      "isDefault": false
+    }
+  ],
+  "variants": [
+    {
+      "id": "default",
+      "displayName": "默认",
+      "noteDurationMode": "none",
+      "availablePitchRange": null,
+      "replacePitchMap": {},
+      "sameKeyMinIntervalOverrideMs": null
+    }
+  ]
+}

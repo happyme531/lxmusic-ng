@@ -1,0 +1,27 @@
+{
+  "id": "netease_hyxd",
+  "displayName": "荒野行动",
+  "packageNameHints": [
+    "netease.hyxd"
+  ],
+  "defaultLayoutId": "generic_piano88",
+  "sameKeyMinIntervalMs": 20,
+  "featureFlags": [],
+  "layouts": [
+    {
+      "layoutId": "generic_piano88",
+      "displayName": "88键钢琴",
+      "isDefault": true
+    }
+  ],
+  "variants": [
+    {
+      "id": "default",
+      "displayName": "默认",
+      "noteDurationMode": "none",
+      "availablePitchRange": null,
+      "replacePitchMap": {},
+      "sameKeyMinIntervalOverrideMs": null
+    }
+  ]
+}

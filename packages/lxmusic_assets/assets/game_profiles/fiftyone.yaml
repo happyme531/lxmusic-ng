@@ -1,0 +1,32 @@
+{
+  "id": "fiftyone",
+  "displayName": "桃源深处有人家",
+  "packageNameHints": [
+    "fiftyone"
+  ],
+  "defaultLayoutId": "tysc_interleaved3x7",
+  "sameKeyMinIntervalMs": 20,
+  "featureFlags": [],
+  "layouts": [
+    {
+      "layoutId": "tysc_interleaved3x7",
+      "displayName": "21键",
+      "isDefault": true
+    },
+    {
+      "layoutId": "dzpd_7_8",
+      "displayName": "15键",
+      "isDefault": false
+    }
+  ],
+  "variants": [
+    {
+      "id": "default",
+      "displayName": "默认",
+      "noteDurationMode": "none",
+      "availablePitchRange": null,
+      "replacePitchMap": {},
+      "sameKeyMinIntervalOverrideMs": null
+    }
+  ]
+}

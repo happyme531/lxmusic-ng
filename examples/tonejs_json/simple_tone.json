@@ -1,0 +1,20 @@
+{
+  "header": {
+    "name": "Simple Tone"
+  },
+  "tracks": [
+    {
+      "name": "Piano",
+      "channel": 0,
+      "instrument": {
+        "number": 0
+      },
+      "notes": [
+        { "name": "C4", "midi": 60, "time": 0.0, "duration": 0.25, "velocity": 0.8 },
+        { "name": "E4", "midi": 64, "time": 0.0, "duration": 0.25, "velocity": 0.8 },
+        { "name": "G4", "midi": 67, "time": 0.5, "duration": 0.30, "velocity": 0.8 }
+      ]
+    }
+  ]
+}
+

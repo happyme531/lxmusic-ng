@@ -1,0 +1,16 @@
+{
+  "id": "hpma_2x7",
+  "algorithm": "procedural",
+  "metadata": {
+    "importedFrom": "legacy_gameProfile.js"
+  },
+  "params": {
+    "pitchRangeOrList": [
+      "C3",
+      "B4"
+    ],
+    "row": 2,
+    "column": 7,
+    "haveSemitone": false
+  }
+}

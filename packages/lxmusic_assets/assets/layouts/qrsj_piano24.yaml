@@ -1,0 +1,18 @@
+{
+  "id": "qrsj_piano24",
+  "algorithm": "procedural",
+  "metadata": {
+    "importedFrom": "legacy_gameProfile.js"
+  },
+  "params": {
+    "pitchRangeOrList": [
+      "C4",
+      "B5"
+    ],
+    "row": 1,
+    "column": 24,
+    "haveSemitone": true,
+    "semiToneHeightOffset": 1,
+    "semiToneWidth": 0
+  }
+}

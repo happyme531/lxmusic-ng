@@ -1,0 +1,21 @@
+name: lxmusic_assets
+description: Shared YAML assets for LxMusic-NG Flutter apps.
+publish_to: none
+version: 0.1.0
+resolution: workspace
+
+environment:
+  sdk: ^3.11.0
+  flutter: ">=3.35.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  lxmusic_core:
+    path: ../lxmusic_core
+
+flutter:
+  assets:
+    - assets/game_profiles/
+    - assets/layouts/
+    - assets/calibrations/

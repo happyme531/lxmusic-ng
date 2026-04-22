@@ -1,0 +1,24 @@
+{
+  "id": "xdxz_7_7_8_half",
+  "algorithm": "procedural",
+  "metadata": {
+    "importedFrom": "legacy_gameProfile.js"
+  },
+  "params": {
+    "pitchRangeOrList": [
+      "C3",
+      "C6"
+    ],
+    "row": 3,
+    "column": 12,
+    "haveSemitone": true,
+    "semiToneHeightOffset": 0.35,
+    "semiToneWidth": 0,
+    "rowLengthOverride": [
+      [
+        2,
+        13
+      ]
+    ]
+  }
+}

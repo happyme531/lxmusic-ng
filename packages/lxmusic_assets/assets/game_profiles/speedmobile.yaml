@@ -1,0 +1,32 @@
+{
+  "id": "speedmobile",
+  "displayName": "qq飞车",
+  "packageNameHints": [
+    "speedmobile"
+  ],
+  "defaultLayoutId": "speedmobile_interleaved3x7_1",
+  "sameKeyMinIntervalMs": 20,
+  "featureFlags": [],
+  "layouts": [
+    {
+      "layoutId": "speedmobile_interleaved3x7_1",
+      "displayName": "22键",
+      "isDefault": true
+    },
+    {
+      "layoutId": "speedmobile_interleaved3x12_1",
+      "displayName": "37键",
+      "isDefault": false
+    }
+  ],
+  "variants": [
+    {
+      "id": "default",
+      "displayName": "默认",
+      "noteDurationMode": "none",
+      "availablePitchRange": null,
+      "replacePitchMap": {},
+      "sameKeyMinIntervalOverrideMs": null
+    }
+  ]
+}

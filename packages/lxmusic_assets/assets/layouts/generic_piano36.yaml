@@ -1,0 +1,18 @@
+{
+  "id": "generic_piano36",
+  "algorithm": "procedural",
+  "metadata": {
+    "importedFrom": "legacy_gameProfile.js"
+  },
+  "params": {
+    "pitchRangeOrList": [
+      "C3",
+      "B5"
+    ],
+    "row": 1,
+    "column": 36,
+    "haveSemitone": true,
+    "semiToneHeightOffset": 1,
+    "semiToneWidth": 0
+  }
+}

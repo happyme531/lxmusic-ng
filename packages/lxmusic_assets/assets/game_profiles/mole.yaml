@@ -1,0 +1,32 @@
+{
+  "id": "mole",
+  "displayName": "摩尔庄园",
+  "packageNameHints": [
+    "mole"
+  ],
+  "defaultLayoutId": "generic_3x7",
+  "sameKeyMinIntervalMs": 20,
+  "featureFlags": [],
+  "layouts": [
+    {
+      "layoutId": "generic_3x7",
+      "displayName": "21键",
+      "isDefault": true
+    },
+    {
+      "layoutId": "hpma_yinterleaved3x12",
+      "displayName": "36键",
+      "isDefault": false
+    }
+  ],
+  "variants": [
+    {
+      "id": "default",
+      "displayName": "默认",
+      "noteDurationMode": "none",
+      "availablePitchRange": null,
+      "replacePitchMap": {},
+      "sameKeyMinIntervalOverrideMs": null
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "id": "nshm_professional_gu_zheng",
+  "algorithm": "procedural",
+  "metadata": {
+    "importedFrom": "legacy_gameProfile.js"
+  },
+  "params": {
+    "pitchRangeOrList": [
+      "C2",
+      "C6#"
+    ],
+    "row": 1,
+    "column": 50,
+    "haveSemitone": true,
+    "semiToneHeightOffset": 1
+  }
+}

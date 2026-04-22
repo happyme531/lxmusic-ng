@@ -1,0 +1,32 @@
+{
+  "id": "hermes",
+  "displayName": "星球:重启",
+  "packageNameHints": [
+    "hermes"
+  ],
+  "defaultLayoutId": "generic_piano88",
+  "sameKeyMinIntervalMs": 20,
+  "featureFlags": [],
+  "layouts": [
+    {
+      "layoutId": "generic_piano88",
+      "displayName": "88键钢琴",
+      "isDefault": true
+    },
+    {
+      "layoutId": "xqcq_suona33",
+      "displayName": "33键唢呐",
+      "isDefault": false
+    }
+  ],
+  "variants": [
+    {
+      "id": "default",
+      "displayName": "默认",
+      "noteDurationMode": "none",
+      "availablePitchRange": null,
+      "replacePitchMap": {},
+      "sameKeyMinIntervalOverrideMs": null
+    }
+  ]
+}

@@ -1,0 +1,32 @@
+{
+  "id": "aobi",
+  "displayName": "奥比岛",
+  "packageNameHints": [
+    "aobi"
+  ],
+  "defaultLayoutId": "abd_7_8_7",
+  "sameKeyMinIntervalMs": 20,
+  "featureFlags": [],
+  "layouts": [
+    {
+      "layoutId": "abd_7_8_7",
+      "displayName": "22键",
+      "isDefault": true
+    },
+    {
+      "layoutId": "abd_8_7",
+      "displayName": "15键",
+      "isDefault": false
+    }
+  ],
+  "variants": [
+    {
+      "id": "default",
+      "displayName": "默认",
+      "noteDurationMode": "none",
+      "availablePitchRange": null,
+      "replacePitchMap": {},
+      "sameKeyMinIntervalOverrideMs": null
+    }
+  ]
+}

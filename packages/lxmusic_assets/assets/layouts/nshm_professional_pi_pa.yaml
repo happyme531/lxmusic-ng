@@ -1,0 +1,17 @@
+{
+  "id": "nshm_professional_pi_pa",
+  "algorithm": "procedural",
+  "metadata": {
+    "importedFrom": "legacy_gameProfile.js"
+  },
+  "params": {
+    "pitchRangeOrList": [
+      "A2",
+      "D6"
+    ],
+    "row": 1,
+    "column": 42,
+    "haveSemitone": true,
+    "semiToneHeightOffset": 1
+  }
+}

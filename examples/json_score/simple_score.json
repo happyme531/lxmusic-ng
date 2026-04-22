@@ -1,0 +1,19 @@
+{
+  "format": "jsonScore",
+  "tracks": [
+    {
+      "name": "Main",
+      "channel": 0,
+      "notes": [
+        { "pitch": 60, "startMs": 0, "durationMs": 120, "velocity": 100, "attrs": {} },
+        { "pitch": 64, "startMs": 0, "durationMs": 120, "velocity": 100, "attrs": {} },
+        { "pitch": 67, "startMs": 240, "durationMs": 160, "velocity": 100, "attrs": {} },
+        { "pitch": 72, "startMs": 480, "durationMs": 220, "velocity": 100, "attrs": {} }
+      ]
+    }
+  ],
+  "lyrics": [],
+  "metadata": {
+    "title": "Simple Score"
+  }
+}

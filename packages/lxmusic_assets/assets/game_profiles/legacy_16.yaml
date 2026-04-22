@@ -1,0 +1,40 @@
+{
+  "id": "legacy_16",
+  "displayName": "心动小镇",
+  "packageNameHints": [],
+  "defaultLayoutId": "dzpd_7_8",
+  "sameKeyMinIntervalMs": 20,
+  "featureFlags": [],
+  "layouts": [
+    {
+      "layoutId": "dzpd_7_8",
+      "displayName": "双排15键",
+      "isDefault": true
+    },
+    {
+      "layoutId": "sky_3x5",
+      "displayName": "三排15键",
+      "isDefault": false
+    },
+    {
+      "layoutId": "xdxz_7_7_8",
+      "displayName": "22键",
+      "isDefault": false
+    },
+    {
+      "layoutId": "xdxz_7_7_8_half",
+      "displayName": "37键",
+      "isDefault": false
+    }
+  ],
+  "variants": [
+    {
+      "id": "default",
+      "displayName": "默认",
+      "noteDurationMode": "none",
+      "availablePitchRange": null,
+      "replacePitchMap": {},
+      "sameKeyMinIntervalOverrideMs": null
+    }
+  ]
+}

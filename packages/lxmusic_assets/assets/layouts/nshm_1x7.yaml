@@ -1,0 +1,16 @@
+{
+  "id": "nshm_1x7",
+  "algorithm": "procedural",
+  "metadata": {
+    "importedFrom": "legacy_gameProfile.js"
+  },
+  "params": {
+    "pitchRangeOrList": [
+      "C4",
+      "B4"
+    ],
+    "row": 1,
+    "column": 7,
+    "haveSemitone": false
+  }
+}

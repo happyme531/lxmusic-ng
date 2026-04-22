@@ -1,0 +1,18 @@
+{
+  "id": "generic_piano88",
+  "algorithm": "procedural",
+  "metadata": {
+    "importedFrom": "legacy_gameProfile.js"
+  },
+  "params": {
+    "pitchRangeOrList": [
+      "A0",
+      "C8"
+    ],
+    "row": 1,
+    "column": 88,
+    "haveSemitone": true,
+    "semiToneHeightOffset": 1,
+    "semiToneWidth": 0
+  }
+}

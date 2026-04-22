@@ -1,0 +1,18 @@
+{
+  "id": "yslzm_piano20",
+  "algorithm": "procedural",
+  "metadata": {
+    "importedFrom": "legacy_gameProfile.js"
+  },
+  "params": {
+    "pitchRangeOrList": [
+      "E4",
+      "B5"
+    ],
+    "row": 1,
+    "column": 20,
+    "haveSemitone": true,
+    "semiToneHeightOffset": 1,
+    "semiToneWidth": 0
+  }
+}

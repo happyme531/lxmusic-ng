@@ -1,0 +1,27 @@
+{
+  "id": "yslzm",
+  "displayName": "以闪亮之名",
+  "packageNameHints": [
+    "yslzm"
+  ],
+  "defaultLayoutId": "yslzm_piano20",
+  "sameKeyMinIntervalMs": 20,
+  "featureFlags": [],
+  "layouts": [
+    {
+      "layoutId": "yslzm_piano20",
+      "displayName": "20键钢琴",
+      "isDefault": true
+    }
+  ],
+  "variants": [
+    {
+      "id": "default",
+      "displayName": "默认",
+      "noteDurationMode": "none",
+      "availablePitchRange": null,
+      "replacePitchMap": {},
+      "sameKeyMinIntervalOverrideMs": null
+    }
+  ]
+}

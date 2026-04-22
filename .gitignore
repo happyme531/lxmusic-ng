@@ -1,0 +1,16 @@
+.dart_tool/
+**/.dart_tool/
+.packages
+.tmp/
+
+build/
+**/build/
+
+.flutter-plugins
+.flutter-plugins-dependencies
+
+*.iml
+.idea/
+.vscode/
+.codex
+result.mid

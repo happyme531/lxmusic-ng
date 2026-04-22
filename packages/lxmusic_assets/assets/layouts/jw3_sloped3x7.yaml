@@ -1,0 +1,33 @@
+{
+  "id": "jw3_sloped3x7",
+  "algorithm": "procedural",
+  "metadata": {
+    "importedFrom": "legacy_gameProfile.js"
+  },
+  "params": {
+    "pitchRangeOrList": [
+      "C3",
+      "B5"
+    ],
+    "row": 3,
+    "column": 7,
+    "haveSemitone": false,
+    "transformMatrix": [
+      [
+        1,
+        0.11,
+        0
+      ],
+      [
+        0,
+        1,
+        0
+      ],
+      [
+        0,
+        0,
+        1
+      ]
+    ]
+  }
+}

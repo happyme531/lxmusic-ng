@@ -1,0 +1,39 @@
+{
+  "id": "abd_8_7",
+  "algorithm": "procedural",
+  "metadata": {
+    "importedFrom": "legacy_gameProfile.js"
+  },
+  "params": {
+    "pitchRangeOrList": [
+      "C3",
+      "C5"
+    ],
+    "row": 2,
+    "column": 7,
+    "haveSemitone": false,
+    "rowLengthOverride": [
+      [
+        1,
+        8
+      ]
+    ],
+    "transformMatrix": [
+      [
+        1,
+        0,
+        0
+      ],
+      [
+        0,
+        -1,
+        1
+      ],
+      [
+        0,
+        0,
+        1
+      ]
+    ]
+  }
+}

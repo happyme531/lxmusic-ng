@@ -1,0 +1,27 @@
+{
+  "id": "tom",
+  "displayName": "猫和老鼠",
+  "packageNameHints": [
+    "tom"
+  ],
+  "defaultLayoutId": "mhls_curved3x7",
+  "sameKeyMinIntervalMs": 20,
+  "featureFlags": [],
+  "layouts": [
+    {
+      "layoutId": "mhls_curved3x7",
+      "displayName": "21键",
+      "isDefault": true
+    }
+  ],
+  "variants": [
+    {
+      "id": "default",
+      "displayName": "默认",
+      "noteDurationMode": "none",
+      "availablePitchRange": null,
+      "replacePitchMap": {},
+      "sameKeyMinIntervalOverrideMs": null
+    }
+  ]
+}

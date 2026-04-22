@@ -1,0 +1,17 @@
+{
+  "id": "nshm_professional_qv_di",
+  "algorithm": "procedural",
+  "metadata": {
+    "importedFrom": "legacy_gameProfile.js"
+  },
+  "params": {
+    "pitchRangeOrList": [
+      "G3",
+      "D6"
+    ],
+    "row": 1,
+    "column": 32,
+    "haveSemitone": true,
+    "semiToneHeightOffset": 1
+  }
+}

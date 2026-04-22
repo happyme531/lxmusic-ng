@@ -1,0 +1,57 @@
+{
+  "id": "nshm",
+  "displayName": "逆水寒",
+  "packageNameHints": [
+    "nshm"
+  ],
+  "defaultLayoutId": "generic_3x7",
+  "sameKeyMinIntervalMs": 20,
+  "featureFlags": [],
+  "layouts": [
+    {
+      "layoutId": "generic_3x7",
+      "displayName": "3x7",
+      "isDefault": true
+    },
+    {
+      "layoutId": "generic_3x12",
+      "displayName": "3x12",
+      "isDefault": false
+    },
+    {
+      "layoutId": "nshm_1x7",
+      "displayName": "1x7",
+      "isDefault": false
+    },
+    {
+      "layoutId": "nshm_professional_gu_zheng",
+      "displayName": "专业模式(古筝)",
+      "isDefault": false
+    },
+    {
+      "layoutId": "nshm_professional_qv_di",
+      "displayName": "专业模式(葫芦丝)",
+      "isDefault": false
+    },
+    {
+      "layoutId": "nshm_professional_pi_pa",
+      "displayName": "专业模式(琵琶)",
+      "isDefault": false
+    },
+    {
+      "layoutId": "nshm_professional_suo_na",
+      "displayName": "专业模式(唢呐)",
+      "isDefault": false
+    }
+  ],
+  "variants": [
+    {
+      "id": "default",
+      "displayName": "默认",
+      "noteDurationMode": "none",
+      "availablePitchRange": null,
+      "replacePitchMap": {},
+      "sameKeyMinIntervalOverrideMs": null
+    }
+  ]
+}

@@ -1,0 +1,33 @@
+{
+  "id": "sky_3x5",
+  "algorithm": "procedural",
+  "metadata": {
+    "importedFrom": "legacy_gameProfile.js"
+  },
+  "params": {
+    "pitchRangeOrList": [
+      "C3",
+      "C5"
+    ],
+    "row": 3,
+    "column": 5,
+    "haveSemitone": false,
+    "transformMatrix": [
+      [
+        1,
+        0,
+        0
+      ],
+      [
+        0,
+        -1,
+        1
+      ],
+      [
+        0,
+        0,
+        1
+      ]
+    ]
+  }
+}

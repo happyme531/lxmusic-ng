@@ -1,0 +1,22 @@
+{
+  "id": "xdxz_7_7_8",
+  "algorithm": "procedural",
+  "metadata": {
+    "importedFrom": "legacy_gameProfile.js"
+  },
+  "params": {
+    "pitchRangeOrList": [
+      "C3",
+      "C6"
+    ],
+    "row": 3,
+    "column": 7,
+    "haveSemitone": false,
+    "rowLengthOverride": [
+      [
+        2,
+        8
+      ]
+    ]
+  }
+}

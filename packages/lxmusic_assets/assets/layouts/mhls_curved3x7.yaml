@@ -1,0 +1,18 @@
+{
+  "id": "mhls_curved3x7",
+  "algorithm": "procedural",
+  "metadata": {
+    "importedFrom": "legacy_gameProfile.js"
+  },
+  "params": {
+    "pitchRangeOrList": [
+      "C3",
+      "B5"
+    ],
+    "row": 3,
+    "column": 7,
+    "haveSemitone": false,
+    "centerAngle": 1.8479956785822313,
+    "centerRadius": 1.55
+  }
+}

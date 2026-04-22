@@ -1,0 +1,22 @@
+{
+  "id": "dzpd_interleaved3x7",
+  "algorithm": "procedural",
+  "metadata": {
+    "importedFrom": "legacy_gameProfile.js"
+  },
+  "params": {
+    "pitchRangeOrList": [
+      "C3",
+      "B5"
+    ],
+    "row": 3,
+    "column": 7,
+    "haveSemitone": false,
+    "insertDummyKeys": [
+      [
+        1,
+        0
+      ]
+    ]
+  }
+}

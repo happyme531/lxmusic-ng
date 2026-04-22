@@ -1,0 +1,11 @@
+steps:
+  - type: estimateNoteDuration
+    config:
+      multiplier: 0.75
+  - type: mergeNearbyNotes
+    config:
+      maxIntervalMs: 100
+  - type: splitLongNote
+    config:
+      minDurationMs: 500
+      splitDurationMs: 100

@@ -1,0 +1,28 @@
+{
+  "id": "speedmobile_interleaved3x7_1",
+  "algorithm": "procedural",
+  "metadata": {
+    "importedFrom": "legacy_gameProfile.js"
+  },
+  "params": {
+    "pitchRangeOrList": [
+      "C3",
+      "C5"
+    ],
+    "row": 3,
+    "column": 7,
+    "haveSemitone": false,
+    "rowLengthOverride": [
+      [
+        2,
+        8
+      ]
+    ],
+    "insertDummyKeys": [
+      [
+        0,
+        7
+      ]
+    ]
+  }
+}

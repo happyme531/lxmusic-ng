@@ -1,0 +1,32 @@
+{
+  "id": "harrypotter",
+  "displayName": "哈利波特: 魔法觉醒",
+  "packageNameHints": [
+    "harrypotter"
+  ],
+  "defaultLayoutId": "hpma_yinterleaved3x12",
+  "sameKeyMinIntervalMs": 20,
+  "featureFlags": [],
+  "layouts": [
+    {
+      "layoutId": "hpma_yinterleaved3x12",
+      "displayName": "36键",
+      "isDefault": true
+    },
+    {
+      "layoutId": "hpma_2x7",
+      "displayName": "14键",
+      "isDefault": false
+    }
+  ],
+  "variants": [
+    {
+      "id": "default",
+      "displayName": "默认",
+      "noteDurationMode": "none",
+      "availablePitchRange": null,
+      "replacePitchMap": {},
+      "sameKeyMinIntervalOverrideMs": null
+    }
+  ]
+}

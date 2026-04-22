@@ -1,0 +1,39 @@
+{
+  "id": "netease_l22",
+  "displayName": "永劫无间",
+  "packageNameHints": [
+    "netease.l22"
+  ],
+  "defaultLayoutId": "yjwj_curved3x7",
+  "sameKeyMinIntervalMs": 20,
+  "featureFlags": [],
+  "layouts": [
+    {
+      "layoutId": "yjwj_curved3x7",
+      "displayName": "3x7",
+      "isDefault": true
+    }
+  ],
+  "variants": [
+    {
+      "id": "default",
+      "displayName": "默认",
+      "noteDurationMode": "none",
+      "availablePitchRange": null,
+      "replacePitchMap": {},
+      "sameKeyMinIntervalOverrideMs": null
+    },
+    {
+      "id": "dizi",
+      "displayName": "笛子",
+      "aliases": ["variant_2"],
+      "noteDurationMode": "none",
+      "availablePitchRange": [
+        55,
+        83
+      ],
+      "replacePitchMap": {},
+      "sameKeyMinIntervalOverrideMs": null
+    }
+  ]
+}

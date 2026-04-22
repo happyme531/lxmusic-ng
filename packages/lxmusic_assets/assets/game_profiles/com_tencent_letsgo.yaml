@@ -1,0 +1,44 @@
+{
+  "id": "com_tencent_letsgo",
+  "displayName": "元梦之星",
+  "packageNameHints": [
+    "com.tencent.letsgo"
+  ],
+  "defaultLayoutId": "generic_3x7",
+  "sameKeyMinIntervalMs": 20,
+  "featureFlags": [],
+  "layouts": [
+    {
+      "layoutId": "generic_3x7",
+      "displayName": "3x7",
+      "isDefault": true
+    },
+    {
+      "layoutId": "hpma_yinterleaved36",
+      "displayName": "3x12",
+      "isDefault": false
+    }
+  ],
+  "variants": [
+    {
+      "id": "default",
+      "displayName": "默认",
+      "noteDurationMode": "none",
+      "availablePitchRange": null,
+      "replacePitchMap": {},
+      "sameKeyMinIntervalOverrideMs": null
+    },
+    {
+      "id": "suona",
+      "displayName": "唢呐",
+      "aliases": ["variant_2"],
+      "noteDurationMode": "none",
+      "availablePitchRange": [
+        52,
+        83
+      ],
+      "replacePitchMap": {},
+      "sameKeyMinIntervalOverrideMs": null
+    }
+  ]
+}

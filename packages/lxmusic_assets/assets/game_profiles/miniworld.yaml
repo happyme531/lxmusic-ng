@@ -1,0 +1,32 @@
+{
+  "id": "miniworld",
+  "displayName": "迷你世界",
+  "packageNameHints": [
+    "miniworld"
+  ],
+  "defaultLayoutId": "generic_3x7",
+  "sameKeyMinIntervalMs": 20,
+  "featureFlags": [],
+  "layouts": [
+    {
+      "layoutId": "generic_3x7",
+      "displayName": "21键",
+      "isDefault": true
+    },
+    {
+      "layoutId": "dzpd_yinterleaved36",
+      "displayName": "36键",
+      "isDefault": false
+    }
+  ],
+  "variants": [
+    {
+      "id": "default",
+      "displayName": "默认",
+      "noteDurationMode": "none",
+      "availablePitchRange": null,
+      "replacePitchMap": {},
+      "sameKeyMinIntervalOverrideMs": null
+    }
+  ]
+}

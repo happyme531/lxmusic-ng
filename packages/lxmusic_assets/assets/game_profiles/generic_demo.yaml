@@ -1,0 +1,19 @@
+id: generic_demo
+displayName: LxMusic-NG Demo
+packageNameHints: []
+defaultLayoutId: generic_3x7_demo
+sameKeyMinIntervalMs: 20
+featureFlags: []
+layouts:
+  - layoutId: generic_3x7_demo
+    displayName: 3x7 Demo
+    isDefault: true
+variants:
+  - id: default
+    displayName: 默认
+    noteDurationMode: none
+  - id: narrow_range
+    displayName: 窄音域
+    noteDurationMode: none
+    availablePitchRange: [60, 72]
+

@@ -1,0 +1,37 @@
+{
+  "id": "mrzh",
+  "displayName": "明日之后",
+  "packageNameHints": [
+    "mrzh"
+  ],
+  "defaultLayoutId": "generic_3x7",
+  "sameKeyMinIntervalMs": 20,
+  "featureFlags": [],
+  "layouts": [
+    {
+      "layoutId": "generic_3x7",
+      "displayName": "21键",
+      "isDefault": true
+    },
+    {
+      "layoutId": "mrzh_3x12",
+      "displayName": "36键",
+      "isDefault": false
+    },
+    {
+      "layoutId": "generic_piano88",
+      "displayName": "88键钢琴",
+      "isDefault": false
+    }
+  ],
+  "variants": [
+    {
+      "id": "default",
+      "displayName": "默认",
+      "noteDurationMode": "none",
+      "availablePitchRange": null,
+      "replacePitchMap": {},
+      "sameKeyMinIntervalOverrideMs": null
+    }
+  ]
+}

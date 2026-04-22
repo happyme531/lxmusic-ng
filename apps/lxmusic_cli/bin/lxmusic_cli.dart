@@ -1,0 +1,1109 @@
+import 'dart:convert';
+import 'dart:io';
+import 'dart:typed_data';
+
+import 'package:args/args.dart';
+import 'package:lxmusic_assets/lxmusic_assets.dart';
+import 'package:lxmusic_core/lxmusic_core.dart';
+import 'package:yaml/yaml.dart';
+
+const _commandSummaries = <String, String>{
+  'analyze': '分析输入谱并生成推荐转换配置。',
+  'convert': '执行转换并输出 JSON / MIDI / executable plan。',
+  'list-formats': '列出支持的输入格式。',
+  'list-passes': '列出已迁移的 transform passes。',
+  'list-profiles': '列出已导入的 profile。',
+  'validate-profiles': '校验 profile 与 layout 资产引用。',
+  'inspect-profile': '查看单个 profile 的展开结果。',
+};
+
+const _topLevelConfigKeys = <String>{
+  'version',
+  'target',
+  'analysis',
+  'pipeline',
+};
+
+void main(List<String> arguments) async {
+  final parser = ArgParser(allowTrailingOptions: true)
+    ..addFlag('help', abbr: 'h', negatable: false, help: '显示帮助')
+    ..addCommand('list-formats')
+    ..addCommand('list-passes')
+    ..addCommand('list-profiles')
+    ..addCommand('validate-profiles')
+    ..addCommand('inspect-profile')
+    ..addCommand('analyze')
+    ..addCommand('convert');
+
+  parser.commands['list-formats']!.addFlag(
+    'help',
+    abbr: 'h',
+    negatable: false,
+    help: '显示帮助',
+  );
+  parser.commands['list-passes']!.addFlag(
+    'help',
+    abbr: 'h',
+    negatable: false,
+    help: '显示帮助',
+  );
+  parser.commands['list-profiles']!.addFlag(
+    'help',
+    abbr: 'h',
+    negatable: false,
+    help: '显示帮助',
+  );
+  parser.commands['validate-profiles']!.addFlag(
+    'help',
+    abbr: 'h',
+    negatable: false,
+    help: '显示帮助',
+  );
+
+  parser.commands['inspect-profile']!
+    ..addFlag('help', abbr: 'h', negatable: false, help: '显示帮助')
+    ..addOption('profile', mandatory: true);
+
+  parser.commands['analyze']!
+    ..addFlag('help', abbr: 'h', negatable: false, help: '显示帮助')
+    ..addOption('input', abbr: 'i', mandatory: true)
+    ..addOption('format', abbr: 'f', help: '输入格式；省略时按输入文件后缀推断。')
+    ..addOption('profile', mandatory: true)
+    ..addOption('layout')
+    ..addOption('variant', defaultsTo: 'default')
+    ..addOption(
+      'track-disable-threshold',
+      defaultsTo: '0.5',
+      help: '多音轨自动推荐选轨阈值，范围 0-1；默认 0.5。',
+    )
+    ..addOption('output')
+    ..addMultiOption(
+      'option',
+      abbr: 'o',
+      help:
+          '覆盖内部配置项，可多次传入，例如 '
+          '--option legalizeTargetNoteRange.semiToneRoundingMode=floor',
+    );
+
+  parser.commands['convert']!
+    ..addFlag('help', abbr: 'h', negatable: false, help: '显示帮助')
+    ..addOption('input', abbr: 'i', mandatory: true)
+    ..addMultiOption(
+      'format',
+      abbr: 'f',
+      help:
+          '-f/--format before --input sets input format; -f after the input '
+          'path sets output format. Two -f before --input: input then output. '
+          'Omit to infer from suffixes (楚留香音乐盒 src/musicFormats.js; plus '
+          '.score.json→json-score).',
+    )
+    ..addOption('profile', mandatory: true)
+    ..addOption('layout')
+    ..addOption('variant', defaultsTo: 'default')
+    ..addOption(
+      'track-disable-threshold',
+      defaultsTo: '0.5',
+      help: '多音轨自动推荐选轨阈值，范围 0-1；默认 0.5。',
+    )
+    ..addOption('config')
+    ..addFlag('analyze', negatable: false)
+    ..addOption('output')
+    ..addMultiOption(
+      'option',
+      abbr: 'o',
+      help:
+          '覆盖内部配置项，可多次传入，例如 '
+          '--option legalizeTargetNoteRange.semiToneRoundingMode=floor',
+    )
+    ..addOption(
+      'output-format',
+      help:
+          'Overrides output format; otherwise inferred from the second -f or '
+          'from the output path suffix (.mid→midi, .json→json).',
+    )
+    ..addOption('backend', defaultsTo: 'preview');
+
+  ArgResults result;
+  try {
+    result = parser.parse(arguments);
+  } on FormatException catch (error) {
+    stderr.writeln('[lxmusic] ${error.message}');
+    final commandName = _extractCommandName(arguments, parser);
+    if (commandName != null) {
+      _printCommandUsage(commandName, parser.commands[commandName]!);
+    } else {
+      _printUsage(parser);
+    }
+    exitCode = 64;
+    return;
+  }
+
+  if (result['help'] as bool) {
+    _printUsage(parser);
+    return;
+  }
+  final command = result.command;
+  if (command == null) {
+    _printUsage(parser);
+    exitCode = 64;
+    return;
+  }
+  if ((command['help'] as bool?) ?? false) {
+    _printCommandUsage(command.name!, parser.commands[command.name]!);
+    return;
+  }
+
+  try {
+    switch (command.name) {
+      case 'list-formats':
+        _runListFormats();
+        return;
+      case 'list-passes':
+        _runListPasses();
+        return;
+      case 'list-profiles':
+        _runListProfiles(command);
+        return;
+      case 'validate-profiles':
+        _runValidate(command);
+        return;
+      case 'inspect-profile':
+        _runInspect(command);
+        return;
+      case 'analyze':
+        _runAnalyze(command, arguments);
+        return;
+      case 'convert':
+        await _runConvert(command, arguments);
+        return;
+    }
+  } on ArgumentError catch (error) {
+    stderr.writeln('[lxmusic] ${error.message}');
+    _printCommandUsage(command.name!, parser.commands[command.name]!, stderr);
+    exitCode = 64;
+    return;
+  }
+}
+
+void _runListFormats() {
+  final registry = _registry();
+  stdout.writeln(prettyJson(registry.supportedFormats));
+}
+
+void _runListPasses() {
+  stdout.writeln(
+    prettyJson(<String>[
+      'mergeTracks',
+      'removeEmptyTracks',
+      'pitchOffset',
+      'legalizeTargetNoteRange',
+      'noteToKey',
+      'bindLyrics',
+      'storeCurrentNoteTime',
+      'mergeNearbyNotes',
+      'foldFrequentSameNote',
+      'estimateNoteDuration',
+      'splitLongNote',
+      'speedChange',
+      'limitBlankDuration',
+      'skipIntro',
+      'singleKeyFrequencyLimit',
+      'noteFrequencySoftLimit',
+      'chordNoteCountLimit',
+      'humanify',
+    ]),
+  );
+}
+
+void _runListProfiles(ArgResults command) {
+  final assets = bundledYamlAssetBundle;
+  final profileRepo = YamlGameProfileRepository(assets);
+  final profiles = profileRepo
+      .list()
+      .map((profile) => profile.toJson())
+      .toList();
+  stdout.writeln(prettyJson(profiles));
+}
+
+void _runValidate(ArgResults command) {
+  final assets = bundledYamlAssetBundle;
+  final profileRepo = YamlGameProfileRepository(assets);
+  final layoutRepo = YamlLayoutRepository(assets);
+  final profiles = profileRepo.list();
+  final layouts = layoutRepo.list();
+
+  stdout.writeln('[lxmusic] validating profiles and layouts...');
+  stdout.writeln(
+    '[lxmusic] profiles: ${profiles.length}, layouts: ${layouts.length}',
+  );
+
+  for (final profile in profiles) {
+    for (final binding in profile.layouts) {
+      final layout = layoutRepo.load(binding.layoutId);
+      if (layout.keys.isEmpty) {
+        throw StateError(
+          'Layout ${layout.id} referenced by profile ${profile.id} has no keys.',
+        );
+      }
+    }
+  }
+
+  stdout.writeln('[lxmusic] validation passed.');
+}
+
+void _runInspect(ArgResults command) {
+  final assets = bundledYamlAssetBundle;
+  final profileRepo = YamlGameProfileRepository(assets);
+  final profile = profileRepo.load(command['profile'] as String);
+  stdout.writeln(prettyJson(profile.toJson()));
+}
+
+void _runAnalyze(ArgResults command, List<String> argv) {
+  final inputFormat = _resolveAnalyzeInputFormat(command, argv);
+  final analysis = _analyzeInput(command, inputFormatId: inputFormat);
+  final outputPath = command['output'] as String?;
+  if (outputPath != null && outputPath.isNotEmpty) {
+    File(
+      outputPath,
+    ).writeAsStringSync(_encodeConversionConfigYaml(analysis.config));
+    stdout.writeln('[lxmusic] wrote conversion config to $outputPath');
+  }
+  stdout.writeln(
+    prettyJson(<String, Object?>{
+      'analysis': analysis.analysis,
+      'config': analysis.config,
+    }),
+  );
+}
+
+Future<void> _runConvert(ArgResults command, List<String> argv) async {
+  final assets = bundledYamlAssetBundle;
+  final calibrationRepo = YamlCalibrationRepository(assets);
+  final registry = _registry();
+  final explicitFormats = _parseConvertFormatsFromArgv(argv);
+  final inputFormat = _resolveConvertInputFormat(command, explicitFormats);
+  final outputPath = _resolveConvertOutputPath(command);
+  final inputFile = File(command['input'] as String);
+  final score = registry.parse(
+    bytes: inputFile.readAsBytesSync(),
+    formatId: inputFormat,
+  );
+  stdout.writeln(
+    '[lxmusic] parsed score: ${score.tracks.length} track(s), '
+    '${score.totalNoteCount} note(s), ${score.totalDurationMs} ms',
+  );
+
+  final configPath = command['config'] as String?;
+  final config = ((command['analyze'] as bool) || configPath == null)
+      ? _analyzeInput(command, inputFormatId: inputFormat).config
+      : _loadConversionConfig(configPath);
+  _applyConfigOverrides(config, _commandOptions(command));
+
+  final transformed = _runPipelineFromConfig(score, config);
+  final ns = transformed.report.noteSummary!;
+  stdout.writeln(
+    '[lxmusic] converted score: ${transformed.score.tracks.length} track(s), '
+    'steps=${transformed.report.stats.length}',
+  );
+  stdout.writeln(
+    '[lxmusic] pipeline notes: in=${ns.inputNoteCount} out=${ns.outputNoteCount} '
+    'added=${ns.pipelineNotesAdded} removed=${ns.pipelineNotesRemoved}',
+  );
+  _printPipelineNoteSummary(
+    transformed.report.stats,
+    ns.inputNoteCount,
+    ns.outputNoteCount,
+  );
+
+  final target = _resolveTargetFromConfig(config, assets);
+  final semanticPlan = const PerformancePlanner().plan(
+    transformed.score,
+    PlanningContext(
+      profile: target.profile,
+      layout: target.layout,
+      variant: target.variant,
+    ),
+  );
+
+  final result = <String, Object?>{
+    'config': config,
+    'transformReport': <String, Object?>{
+      'stats': transformed.report.stats.map((stat) => stat.toJson()).toList(),
+      'warnings': transformed.report.warnings,
+      if (transformed.report.noteSummary != null)
+        'noteSummary': transformed.report.noteSummary!.toJson(),
+    },
+    'semanticPlan': semanticPlan.toJson(),
+  };
+
+  final outputFormat = _resolveConvertOutputFormat(
+    command,
+    outputPath,
+    explicitFormats,
+  );
+
+  if (outputFormat == 'executable-plan-json') {
+    final calibration = calibrationRepo.load(
+      CalibrationKey(
+        profileId: target.profile.id,
+        layoutId: target.layout.id,
+        deviceId: 'sample-device',
+        orientation: 'portrait',
+      ),
+    );
+    final executablePlan = const BackendCompiler().compile(
+      semanticPlan,
+      BackendContext(
+        constraints: BackendConstraints(
+          backendId: command['backend'] as String,
+          supportsHold: true,
+          maxSimultaneousTouches: 5,
+          minTapGapMs: 8,
+          gestureBatchWindowMs: 32,
+          supportedKinds: <String>{
+            'touchGesture',
+            'touchPoints',
+            'overlayHint',
+          },
+        ),
+        calibration: calibration,
+        layout: target.layout,
+        noteDurationMode: target.variant.noteDurationMode,
+      ),
+    );
+    result['executablePlan'] = executablePlan.toJson();
+  }
+
+  switch (outputFormat) {
+    case 'json':
+      _writeTextOutput(
+        outputPath: outputPath,
+        contents: prettyJson(result),
+        label: 'converted output',
+      );
+      return;
+    case 'score-json':
+      _writeTextOutput(
+        outputPath: outputPath,
+        contents: prettyJson(transformed.score.toJson()),
+        label: 'converted score',
+      );
+      return;
+    case 'semantic-plan-json':
+      _writeTextOutput(
+        outputPath: outputPath,
+        contents: prettyJson(semanticPlan.toJson()),
+        label: 'semantic plan',
+      );
+      return;
+    case 'executable-plan-json':
+      final executablePlan = result['executablePlan'];
+      _writeTextOutput(
+        outputPath: outputPath,
+        contents: prettyJson(Map<String, Object?>.from(executablePlan as Map)),
+        label: 'executable plan',
+      );
+      return;
+    case 'midi':
+      if (outputPath == null || outputPath.isEmpty) {
+        throw ArgumentError('output-format midi requires --output.');
+      }
+      File(outputPath).writeAsBytesSync(
+        const MidiScoreEncoder().encode(transformed.score),
+      );
+      stdout.writeln('[lxmusic] wrote midi output to $outputPath');
+      return;
+    default:
+      throw ArgumentError('Unsupported output format "$outputFormat".');
+  }
+}
+
+/// Parses `-f` / `--format` relative to `--input` (argv order). See
+/// [addMultiOption] help on `convert`.
+({String? input, String? output}) _parseConvertFormatsFromArgv(
+  List<String> argv,
+) {
+  final sub = _argsAfterSubcommand(argv, 'convert');
+  if (sub == null) {
+    return (input: null, output: null);
+  }
+  final sep = _indexOfInputOption(sub);
+  if (sep == null) {
+    return (input: null, output: null);
+  }
+  final before = sub.sublist(0, sep.optionIndex);
+  final after = sub.sublist(sep.afterInputIndex);
+
+  final bf = _collectFormatOptionValues(before);
+  final af = _collectFormatOptionValues(after);
+
+  if (bf.length >= 2 && af.isEmpty) {
+    return (input: bf[0], output: bf[1]);
+  }
+  if (bf.length == 1 && af.isEmpty) {
+    return (input: bf[0], output: null);
+  }
+  if (bf.isEmpty && af.isNotEmpty) {
+    return (input: null, output: af[0]);
+  }
+  if (bf.length == 1 && af.isNotEmpty) {
+    return (input: bf[0], output: af[0]);
+  }
+  if (bf.length >= 2 && af.isNotEmpty) {
+    return (input: bf[0], output: af[0]);
+  }
+  return (input: null, output: null);
+}
+
+String _resolveAnalyzeInputFormat(ArgResults command, List<String> argv) {
+  final explicit = command['format'] as String?;
+  if (explicit != null && explicit.isNotEmpty) {
+    return explicit;
+  }
+  final path = command['input'] as String;
+  final inferred = _inferInputFormatFromPath(path);
+  if (inferred != null) {
+    return inferred;
+  }
+  throw ArgumentError(
+    'Cannot infer input format from "$path". '
+    'Specify with -f / --format (e.g. -f tonejs-json).',
+  );
+}
+
+List<String>? _argsAfterSubcommand(List<String> argv, String name) {
+  final i = argv.indexOf(name);
+  if (i < 0) {
+    return null;
+  }
+  return argv.sublist(i + 1);
+}
+
+({int optionIndex, int afterInputIndex})? _indexOfInputOption(
+  List<String> sub,
+) {
+  for (var i = 0; i < sub.length; i++) {
+    final t = sub[i];
+    if (t == '--input' || t == '-i') {
+      if (i + 1 >= sub.length) {
+        throw ArgumentError('--input/-i requires a path.');
+      }
+      return (optionIndex: i, afterInputIndex: i + 2);
+    }
+    if (t.startsWith('--input=')) {
+      return (optionIndex: i, afterInputIndex: i + 1);
+    }
+  }
+  return null;
+}
+
+List<String> _collectFormatOptionValues(List<String> segment) {
+  final out = <String>[];
+  for (var i = 0; i < segment.length; i++) {
+    final t = segment[i];
+    if (t == '-f' || t == '--format') {
+      if (i + 1 < segment.length) {
+        out.add(segment[i + 1]);
+        i++;
+      }
+    } else if (t.startsWith('--format=')) {
+      final v = t.substring('--format='.length);
+      if (v.isNotEmpty) {
+        out.add(v);
+      }
+    }
+  }
+  return out;
+}
+
+/// Longest-suffix rules aligned with [楚留香音乐盒/src/musicFormats.js], plus
+/// `.score.json` → json-score for this repo’s examples.
+String _resolveConvertInputFormat(
+  ArgResults command,
+  ({String? input, String? output}) explicit,
+) {
+  if (explicit.input != null && explicit.input!.isNotEmpty) {
+    return explicit.input!;
+  }
+  final path = command['input'] as String;
+  final inferred = _inferInputFormatFromPath(path);
+  if (inferred != null) {
+    return inferred;
+  }
+  throw ArgumentError(
+    'Cannot infer input format from "$path". '
+    'Specify with -f / --format before --input (e.g. -f tonejs-json).',
+  );
+}
+
+String? _resolveConvertOutputPath(ArgResults command) {
+  final explicit = command['output'] as String?;
+  if (explicit != null && explicit.isNotEmpty) {
+    return explicit;
+  }
+  final rest = command.rest;
+  if (rest.isEmpty) {
+    return null;
+  }
+  if (rest.length > 1) {
+    throw ArgumentError(
+      'convert: unexpected trailing arguments: ${rest.join(' ')}. '
+      'Use at most one output path after options (or --output).',
+    );
+  }
+  return rest.single;
+}
+
+String _resolveConvertOutputFormat(
+  ArgResults command,
+  String? outputPath,
+  ({String? input, String? output}) explicit,
+) {
+  final cli = command['output-format'] as String?;
+  if (cli != null && cli.isNotEmpty) {
+    return cli;
+  }
+  if (explicit.output != null && explicit.output!.isNotEmpty) {
+    return explicit.output!;
+  }
+  if (outputPath != null && outputPath.isNotEmpty) {
+    final inferred = _inferOutputFormatFromPath(outputPath);
+    if (inferred != null) {
+      return inferred;
+    }
+  }
+  return 'json';
+}
+
+String? _inferInputFormatFromPath(String filePath) {
+  final lower = filePath.toLowerCase().replaceAll('\\', '/');
+  const suffixes = <String>[
+    '.dms.txt',
+    '.skystudio.txt',
+    '.score.json',
+    '.mid',
+    '.json',
+  ];
+  const ids = <String, String>{
+    '.dms.txt': 'domiso',
+    '.skystudio.txt': 'skystudio-json',
+    '.score.json': 'json-score',
+    '.mid': 'midi',
+    '.json': 'tonejs-json',
+  };
+  for (final suffix in suffixes) {
+    if (lower.endsWith(suffix)) {
+      return ids[suffix];
+    }
+  }
+  return null;
+}
+
+String? _inferOutputFormatFromPath(String filePath) {
+  final lower = filePath.toLowerCase().replaceAll('\\', '/');
+  if (lower.endsWith('.mid')) {
+    return 'midi';
+  }
+  if (lower.endsWith('.json')) {
+    return 'json';
+  }
+  return null;
+}
+
+ParserRegistry _registry() {
+  return ParserRegistry(<String, ScoreParser>{
+    'domiso': DoMiSoScoreParser(),
+    'json-score': _JsonScoreParser(),
+    'midi': const MidiScoreParser(),
+    'skystudio-json': const SkyStudioJsonScoreParser(),
+    'tonejs-json': ToneJsJsonScoreParser(),
+  });
+}
+
+void _printUsage(ArgParser parser, [IOSink? sink]) {
+  sink ??= stdout;
+  sink.writeln('LxMusic-NG CLI');
+  sink.writeln();
+  sink.writeln('用法: lxmusic_cli <command> [options]');
+  sink.writeln();
+  sink.writeln('主要命令:');
+  sink.writeln('  analyze            ${_commandSummaries['analyze']}');
+  sink.writeln('  convert            ${_commandSummaries['convert']}');
+  sink.writeln();
+  sink.writeln('辅助命令:');
+  sink.writeln('  list-formats       ${_commandSummaries['list-formats']}');
+  sink.writeln('  list-passes        ${_commandSummaries['list-passes']}');
+  sink.writeln('  list-profiles      ${_commandSummaries['list-profiles']}');
+  sink.writeln(
+    '  validate-profiles  ${_commandSummaries['validate-profiles']}',
+  );
+  sink.writeln('  inspect-profile    ${_commandSummaries['inspect-profile']}');
+  sink.writeln();
+  sink.writeln('示例:');
+  sink.writeln(
+    '  dart run apps/lxmusic_cli/bin/lxmusic_cli.dart analyze '
+    '--input examples/domiso/scale.dms.txt --format domiso --profile generic_demo',
+  );
+  sink.writeln(
+    '  dart run apps/lxmusic_cli/bin/lxmusic_cli.dart convert '
+    '--input examples/json_score/simple_score.json --format json-score '
+    '--profile generic_demo --analyze '
+    '--option legalizeTargetNoteRange.semiToneRoundingMode=floor '
+    '--output out.json',
+  );
+  sink.writeln();
+  sink.writeln('更多帮助:');
+  sink.writeln(
+    '  dart run apps/lxmusic_cli/bin/lxmusic_cli.dart <command> --help',
+  );
+  sink.writeln();
+  sink.writeln(parser.usage);
+}
+
+void _printCommandUsage(String commandName, ArgParser parser, [IOSink? sink]) {
+  sink ??= stdout;
+  sink.writeln('LxMusic-NG CLI');
+  sink.writeln();
+  sink.writeln('$commandName: ${_commandSummaries[commandName] ?? ''}');
+  sink.writeln();
+  sink.writeln('用法:');
+  sink.writeln(switch (commandName) {
+    'analyze' =>
+      '  dart run apps/lxmusic_cli/bin/lxmusic_cli.dart analyze '
+          '--input <file> --profile <profile> [options]',
+    'convert' =>
+      '  dart run apps/lxmusic_cli/bin/lxmusic_cli.dart convert '
+          '--input <file> --profile <profile> [options]',
+    'inspect-profile' =>
+      '  dart run apps/lxmusic_cli/bin/lxmusic_cli.dart inspect-profile '
+          '--profile <profile> [options]',
+    _ =>
+      '  dart run apps/lxmusic_cli/bin/lxmusic_cli.dart $commandName [options]',
+  });
+  sink.writeln();
+  final example = _commandExample(commandName);
+  if (example != null) {
+    sink.writeln('示例:');
+    sink.writeln('  $example');
+    sink.writeln();
+  }
+  sink.writeln(parser.usage);
+}
+
+String? _extractCommandName(List<String> arguments, ArgParser parser) {
+  for (final arg in arguments) {
+    if (parser.commands.containsKey(arg)) {
+      return arg;
+    }
+  }
+  return null;
+}
+
+String? _commandExample(String commandName) {
+  return switch (commandName) {
+    'analyze' =>
+      'dart run apps/lxmusic_cli/bin/lxmusic_cli.dart analyze '
+          '--input examples/domiso/scale.dms.txt --format domiso '
+          '--profile generic_demo',
+    'convert' =>
+      'dart run apps/lxmusic_cli/bin/lxmusic_cli.dart convert '
+          '--input examples/json_score/simple_score.json --format json-score '
+          '--profile generic_demo --analyze '
+          '--option legalizeTargetNoteRange.semiToneRoundingMode=floor '
+          '--output out.json',
+    'inspect-profile' =>
+      'dart run apps/lxmusic_cli/bin/lxmusic_cli.dart inspect-profile '
+          '--profile generic_demo',
+    'list-profiles' =>
+      'dart run apps/lxmusic_cli/bin/lxmusic_cli.dart list-profiles',
+    'validate-profiles' =>
+      'dart run apps/lxmusic_cli/bin/lxmusic_cli.dart validate-profiles',
+    _ => null,
+  };
+}
+
+List<String> _commandOptions(ArgResults command) {
+  final values = command['option'] as List<String>?;
+  return values ?? const <String>[];
+}
+
+SemiToneRoundingMode _resolveSemiToneRoundingMode(ArgResults command) {
+  for (final option in _commandOptions(command)) {
+    final parsed = _parseOptionAssignment(option);
+    if (parsed.path.length == 2 &&
+        parsed.path[0] == 'legalizeTargetNoteRange' &&
+        parsed.path[1] == 'semiToneRoundingMode') {
+      return _parseSemiToneRoundingMode(parsed.rawValue);
+    }
+  }
+  return SemiToneRoundingMode.floor;
+}
+
+void _applyConfigOverrides(Map<String, Object?> config, List<String> options) {
+  for (final option in options) {
+    final parsed = _parseOptionAssignment(option);
+    if (parsed.path.isEmpty) {
+      throw ArgumentError('Invalid --option "$option".');
+    }
+    if (_topLevelConfigKeys.contains(parsed.path.first)) {
+      _setNestedConfigValue(
+        config,
+        parsed.path,
+        _parseOptionValue(parsed.rawValue),
+      );
+      continue;
+    }
+    _setPipelineStepConfigValue(
+      config,
+      stepType: parsed.path.first,
+      path: parsed.path.skip(1).toList(),
+      value: _parseOptionValue(parsed.rawValue),
+    );
+  }
+}
+
+({List<String> path, String rawValue}) _parseOptionAssignment(String input) {
+  final index = input.indexOf('=');
+  if (index <= 0 || index == input.length - 1) {
+    throw ArgumentError(
+      'Invalid --option "$input". Expected dotted.path=value.',
+    );
+  }
+  final key = input.substring(0, index).trim();
+  final value = input.substring(index + 1).trim();
+  final path = key
+      .split('.')
+      .map((segment) => segment.trim())
+      .where((segment) => segment.isNotEmpty)
+      .toList();
+  if (path.isEmpty) {
+    throw ArgumentError(
+      'Invalid --option "$input". Expected dotted.path=value.',
+    );
+  }
+  return (path: path, rawValue: value);
+}
+
+Object? _parseOptionValue(String raw) {
+  if (raw == 'true') {
+    return true;
+  }
+  if (raw == 'false') {
+    return false;
+  }
+  if (raw == 'null') {
+    return null;
+  }
+  final asInt = int.tryParse(raw);
+  if (asInt != null) {
+    return asInt;
+  }
+  final asDouble = double.tryParse(raw);
+  if (asDouble != null) {
+    return asDouble;
+  }
+  if ((raw.startsWith('{') && raw.endsWith('}')) ||
+      (raw.startsWith('[') && raw.endsWith(']'))) {
+    return jsonDecode(raw);
+  }
+  return raw;
+}
+
+void _setNestedConfigValue(
+  Map<String, Object?> root,
+  List<String> path,
+  Object? value,
+) {
+  if (path.isEmpty) {
+    throw ArgumentError('Config override path must not be empty.');
+  }
+  Map<String, Object?> current = root;
+  for (final key in path.take(path.length - 1)) {
+    final next = current[key];
+    if (next is Map<String, Object?>) {
+      current = next;
+      continue;
+    }
+    if (next is Map) {
+      current[key] = Map<String, Object?>.from(next);
+      current = current[key] as Map<String, Object?>;
+      continue;
+    }
+    final created = <String, Object?>{};
+    current[key] = created;
+    current = created;
+  }
+  current[path.last] = value;
+}
+
+void _setPipelineStepConfigValue(
+  Map<String, Object?> config, {
+  required String stepType,
+  required List<String> path,
+  required Object? value,
+}) {
+  if (path.isEmpty) {
+    throw ArgumentError(
+      'Pipeline step override "$stepType" requires a config path after the step type.',
+    );
+  }
+  final pipeline = Map<String, Object?>.from(
+    config['pipeline'] as Map? ?? const <String, Object?>{},
+  );
+  config['pipeline'] = pipeline;
+  final steps = (pipeline['steps'] as List<Object?>? ?? const <Object?>[])
+      .map((item) => Map<String, Object?>.from(item! as Map))
+      .toList();
+  pipeline['steps'] = steps;
+
+  Map<String, Object?>? matched;
+  for (final step in steps) {
+    if (step['type'] == stepType) {
+      matched = step;
+      break;
+    }
+  }
+  if (matched == null) {
+    throw ArgumentError('Pipeline step "$stepType" not found in config.');
+  }
+
+  final stepConfig = Map<String, Object?>.from(
+    matched['config'] as Map? ?? const <String, Object?>{},
+  );
+  matched['config'] = stepConfig;
+  _setNestedConfigValue(stepConfig, path, value);
+}
+
+({Map<String, Object?> analysis, Map<String, Object?> config}) _analyzeInput(
+  ArgResults command, {
+  required String inputFormatId,
+}) {
+  final registry = _registry();
+  final target = _resolveAnalysisTargetFromArgs(command);
+  final inputFile = File(command['input'] as String);
+  final score = registry.parse(
+    bytes: inputFile.readAsBytesSync(),
+    formatId: inputFormatId,
+  );
+  final roundingMode = _resolveSemiToneRoundingMode(command);
+  final analysis = analyzeScoreForTarget(
+    score,
+    target: target,
+    roundingMode: roundingMode,
+    trackDisableThreshold: _parseTrackDisableThreshold(command),
+  );
+  final config = analysis.toConfigJson(roundingMode: roundingMode);
+  _applyConfigOverrides(config, _commandOptions(command));
+
+  return (analysis: analysis.toAnalysisJson(), config: config);
+}
+
+double _parseTrackDisableThreshold(ArgResults command) {
+  final raw = command['track-disable-threshold'] as String? ?? '0.5';
+  final value = double.tryParse(raw);
+  if (value == null || value < 0 || value > 1) {
+    throw ArgumentError(
+      'track-disable-threshold must be a number between 0 and 1.',
+    );
+  }
+  return value;
+}
+
+AnalysisTarget _resolveAnalysisTargetFromArgs(ArgResults command) {
+  final assets = bundledYamlAssetBundle;
+  final profileRepo = YamlGameProfileRepository(assets);
+  final layoutRepo = YamlLayoutRepository(assets);
+  final profile = profileRepo.load(command['profile'] as String);
+  final variantId = command['variant'] as String;
+  final variant = profile.variantById(variantId);
+  if (variant == null) {
+    throw ArgumentError(
+      'Variant "$variantId" not found in profile ${profile.id}.',
+    );
+  }
+  final layoutId =
+      (command['layout'] as String?) ??
+      profile.defaultLayoutId ??
+      profile.layouts.first.layoutId;
+  final layout = layoutRepo.load(layoutId);
+  return AnalysisTarget(profile: profile, variant: variant, layout: layout);
+}
+
+({GameProfile profile, InstrumentVariant variant, KeyLayout layout})
+_resolveTargetFromConfig(Map<String, Object?> config, YamlAssetBundle assets) {
+  final profileRepo = YamlGameProfileRepository(assets);
+  final layoutRepo = YamlLayoutRepository(assets);
+  final target = Map<String, Object?>.from(config['target'] as Map);
+  final profile = profileRepo.load(target['profileId'] as String);
+  final variantId = target['variantId'] as String;
+  final variant = profile.variantById(variantId);
+  if (variant == null) {
+    throw ArgumentError(
+      'Variant "$variantId" not found in profile ${profile.id}.',
+    );
+  }
+  final layout = layoutRepo.load(target['layoutId'] as String);
+  return (profile: profile, variant: variant, layout: layout);
+}
+
+({Score score, TransformReport report}) _runPipelineFromConfig(
+  Score score,
+  Map<String, Object?> config,
+) {
+  final pipeline = Map<String, Object?>.from(config['pipeline'] as Map);
+  final steps = (pipeline['steps'] as List<Object?>? ?? const <Object?>[])
+      .map((step) => Map<String, Object?>.from(step! as Map))
+      .map(
+        (step) => TransformStep(
+          type: step['type'] as String,
+          config: Map<String, Object?>.from(
+            step['config'] as Map? ?? const <String, Object?>{},
+          ),
+        ),
+      )
+      .toList();
+  return TransformPipeline(steps).run(score);
+}
+
+Map<String, Object?> _loadConversionConfig(String path) {
+  final yaml = loadYaml(File(path).readAsStringSync()) as YamlMap;
+  return _yamlToObjectMap(yaml);
+}
+
+Map<String, Object?> _yamlToObjectMap(YamlMap yaml) {
+  return Map<String, Object?>.fromEntries(
+    yaml.entries.map(
+      (entry) =>
+          MapEntry(entry.key.toString(), _yamlValueToObject(entry.value)),
+    ),
+  );
+}
+
+Object? _yamlValueToObject(Object? value) {
+  if (value is YamlMap) {
+    return _yamlToObjectMap(value);
+  }
+  if (value is YamlList) {
+    return value.map(_yamlValueToObject).toList();
+  }
+  return value;
+}
+
+SemiToneRoundingMode _parseSemiToneRoundingMode(String value) {
+  return SemiToneRoundingMode.values.byName(value);
+}
+
+String _encodeConversionConfigYaml(Map<String, Object?> config) {
+  final buffer = StringBuffer();
+  _writeYamlValue(buffer, config, 0);
+  return buffer.toString();
+}
+
+void _writeYamlValue(StringBuffer buffer, Object? value, int indent) {
+  final prefix = '  ' * indent;
+  if (value is Map<String, Object?>) {
+    for (final entry in value.entries) {
+      if (entry.value is Map || entry.value is List) {
+        buffer.writeln('$prefix${entry.key}:');
+        _writeYamlValue(buffer, entry.value, indent + 1);
+      } else {
+        buffer.writeln('$prefix${entry.key}: ${_yamlScalar(entry.value)}');
+      }
+    }
+    return;
+  }
+  if (value is List<Object?>) {
+    for (final item in value) {
+      if (item is Map<String, Object?>) {
+        buffer.writeln('$prefix-');
+        _writeYamlValue(buffer, item, indent + 1);
+      } else if (item is List<Object?>) {
+        buffer.writeln('$prefix-');
+        _writeYamlValue(buffer, item, indent + 1);
+      } else {
+        buffer.writeln('$prefix- ${_yamlScalar(item)}');
+      }
+    }
+    return;
+  }
+  buffer.writeln('$prefix${_yamlScalar(value)}');
+}
+
+String _yamlScalar(Object? value) {
+  if (value == null) {
+    return 'null';
+  }
+  if (value is num || value is bool) {
+    return value.toString();
+  }
+  final text = value.toString().replaceAll("'", "''");
+  return "'$text'";
+}
+
+void _printPipelineNoteSummary(
+  List<PassStat> stats,
+  int inputNoteCount,
+  int outputNoteCount,
+) {
+  T? getStat<T>(String passName, String key) {
+    for (final s in stats) {
+      if (s.name == passName) {
+        return s.values[key] as T?;
+      }
+    }
+    return null;
+  }
+
+  String pct(int count, int total) =>
+      total > 0 ? (count / total * 100).toStringAsFixed(2) : '0.00';
+
+  final overFlowed =
+      getStat<int>('LegalizeTargetNoteRangePass', 'overFlowedNoteCount') ?? 0;
+  final underFlowed =
+      getStat<int>('LegalizeTargetNoteRangePass', 'underFlowedNoteCount') ?? 0;
+  final rounded =
+      getStat<int>('LegalizeTargetNoteRangePass', 'roundedNoteCount') ?? 0;
+  final droppedFreq =
+      getStat<int>('SingleKeyFrequencyLimitPass', 'droppedNoteCount') ?? 0;
+  final droppedSame =
+      getStat<int>('MergeNearbyNotesPass', 'droppedSameNoteCount') ?? 0;
+  final outRanged = overFlowed + underFlowed;
+  final dropped = droppedFreq + droppedSame;
+
+  stdout.writeln('[lxmusic] note summary:');
+  stdout.writeln('[lxmusic]   total: $inputNoteCount -> $outputNoteCount');
+  stdout.writeln(
+    '[lxmusic]   out-of-range discarded: $outRanged '
+    '(+$overFlowed, -$underFlowed) (${pct(outRanged, inputNoteCount)}%)',
+  );
+  stdout.writeln(
+    '[lxmusic]   semitone-rounded: $rounded (${pct(rounded, inputNoteCount)}%)',
+  );
+  stdout.writeln(
+    '[lxmusic]   too-dense discarded: $dropped (${pct(dropped, outputNoteCount)}%)',
+  );
+}
+
+void _writeTextOutput({
+  required String? outputPath,
+  required String contents,
+  required String label,
+}) {
+  if (outputPath != null && outputPath.isNotEmpty) {
+    File(outputPath).writeAsStringSync(contents);
+    stdout.writeln('[lxmusic] wrote $label to $outputPath');
+    return;
+  }
+  stdout.writeln(contents);
+}
+
+class _JsonScoreParser implements ScoreParser {
+  @override
+  String get formatId => 'json-score';
+
+  @override
+  Score parse(Uint8List bytes) {
+    final decoded = jsonDecode(utf8.decode(bytes)) as Map<String, Object?>;
+    return Score.fromJson(decoded);
+  }
+}
