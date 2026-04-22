@@ -1,0 +1,424 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+
+    steps:
+      - name: Extract version
+        id: meta
+        run: echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+
+  build-cli:
+    needs: prepare
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: linux-x64
+            binary_name: lxmusic-cli
+          - os: ubuntu-24.04-arm
+            target: linux-arm64
+            binary_name: lxmusic-cli
+          - os: windows-latest
+            target: windows-x64
+            binary_name: lxmusic-cli.exe
+          - os: windows-11-arm
+            target: windows-arm64
+            binary_name: lxmusic-cli.exe
+          - os: macos-latest
+            target: macos
+            binary_name: lxmusic-cli
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Resolve dependencies
+        run: flutter pub get
+
+      - name: Build CLI executable
+        shell: bash
+        run: |
+          mkdir -p dist
+          dart compile exe apps/lxmusic_cli/bin/lxmusic_cli.dart \
+            -o "dist/${{ matrix.binary_name }}"
+
+      - name: Package CLI artifact (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          mkdir -p package
+          cp "dist/${{ matrix.binary_name }}" package/
+          tar -C package \
+            -czf "dist/lxmusic-ng-cli-${{ matrix.target }}-${{ needs.prepare.outputs.version }}.tar.gz" \
+            "${{ matrix.binary_name }}"
+
+      - name: Package CLI artifact (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path package | Out-Null
+          Copy-Item "dist/${{ matrix.binary_name }}" "package/${{ matrix.binary_name }}"
+          Compress-Archive `
+            -Path "package/${{ matrix.binary_name }}" `
+            -DestinationPath "dist/lxmusic-ng-cli-${{ matrix.target }}-${{ needs.prepare.outputs.version }}.zip" `
+            -Force
+
+      - name: Upload CLI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-cli-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  build-gui-linux-web-android:
+    needs: prepare
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Linux desktop dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake libgtk-3-dev ninja-build pkg-config
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Enable Flutter targets
+        run: |
+          flutter config --enable-linux-desktop
+          flutter config --enable-web
+
+      - name: Resolve dependencies
+        run: flutter pub get
+
+      - name: Validate Android signing secrets
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          for name in \
+            ANDROID_KEYSTORE_BASE64 \
+            ANDROID_KEYSTORE_PASSWORD \
+            ANDROID_KEY_ALIAS \
+            ANDROID_KEY_PASSWORD; do
+            if [ -z "${!name}" ]; then
+              echo "Missing required secret: $name" >&2
+              exit 1
+            fi
+          done
+
+      - name: Restore Android keystore
+        shell: bash
+        run: |
+          echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 --decode > apps/lxmusic_app/android/release.jks
+
+      - name: Build Linux bundle
+        working-directory: apps/lxmusic_app
+        run: flutter build linux --release
+
+      - name: Build Web bundle
+        working-directory: apps/lxmusic_app
+        run: flutter build web --release
+
+      - name: Build Android APK
+        working-directory: apps/lxmusic_app
+        env:
+          ANDROID_KEYSTORE_PATH: ${{ github.workspace }}/apps/lxmusic_app/android/release.jks
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: flutter build apk --release
+
+      - name: Package Linux/Web/Android artifacts
+        shell: bash
+        run: |
+          mkdir -p dist
+          tar -C apps/lxmusic_app/build/linux/x64/release/bundle \
+            -czf "dist/lxmusic-ng-app-linux-x64-${{ needs.prepare.outputs.version }}.tar.gz" .
+          (
+            cd apps/lxmusic_app/build/web
+            zip -r "${GITHUB_WORKSPACE}/dist/lxmusic-ng-app-web-${{ needs.prepare.outputs.version }}.zip" .
+          )
+          cp \
+            apps/lxmusic_app/build/app/outputs/flutter-apk/app-release.apk \
+            "dist/lxmusic-ng-app-android-${{ needs.prepare.outputs.version }}.apk"
+
+      - name: Upload Linux/Web/Android artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-gui-linux-web-android
+          path: dist/*
+          if-no-files-found: error
+
+  build-gui-linux-arm64:
+    needs: prepare
+    runs-on: ubuntu-24.04-arm
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Linux desktop dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake libgtk-3-dev ninja-build pkg-config
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Enable Flutter targets
+        run: flutter config --enable-linux-desktop
+
+      - name: Resolve dependencies
+        run: flutter pub get
+
+      - name: Build Linux Arm64 bundle
+        working-directory: apps/lxmusic_app
+        run: flutter build linux --release --target-platform linux-arm64
+
+      - name: Package Linux Arm64 artifact
+        shell: bash
+        run: |
+          mkdir -p dist
+          shopt -s nullglob
+          bundles=(apps/lxmusic_app/build/linux/*/release/bundle)
+          if [ "${#bundles[@]}" -ne 1 ]; then
+            echo "Expected exactly one Linux bundle, found ${#bundles[@]}" >&2
+            exit 1
+          fi
+          tar -C "${bundles[0]}" \
+            -czf "dist/lxmusic-ng-app-linux-arm64-${{ needs.prepare.outputs.version }}.tar.gz" \
+            .
+
+      - name: Upload Linux Arm64 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-gui-linux-arm64
+          path: dist/*
+          if-no-files-found: error
+
+  build-gui-windows:
+    needs: prepare
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Enable Flutter targets
+        run: flutter config --enable-windows-desktop
+
+      - name: Resolve dependencies
+        run: flutter pub get
+
+      - name: Build Windows bundle
+        working-directory: apps/lxmusic_app
+        run: flutter build windows --release
+
+      - name: Package Windows artifact
+        shell: pwsh
+        run: |
+          $archive = "dist/lxmusic-ng-app-windows-x64-${{ needs.prepare.outputs.version }}.zip"
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          $releaseDir = Get-ChildItem "apps/lxmusic_app/build/windows" -Directory | Select-Object -ExpandProperty FullName
+          if (($releaseDir | Measure-Object).Count -ne 1) {
+            Write-Error "Expected exactly one Windows build directory, found $(($releaseDir | Measure-Object).Count)"
+            exit 1
+          }
+          Compress-Archive -Path "$releaseDir/runner/Release/*" -DestinationPath $archive -Force
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-gui-windows
+          path: dist/*.zip
+          if-no-files-found: error
+
+  build-gui-windows-arm64:
+    needs: prepare
+    runs-on: windows-11-arm
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Enable Flutter targets
+        run: flutter config --enable-windows-desktop
+
+      - name: Resolve dependencies
+        run: flutter pub get
+
+      - name: Build Windows Arm64 bundle
+        working-directory: apps/lxmusic_app
+        run: flutter build windows --release
+
+      - name: Package Windows Arm64 artifact
+        shell: pwsh
+        run: |
+          $archive = "dist/lxmusic-ng-app-windows-arm64-${{ needs.prepare.outputs.version }}.zip"
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          $releaseDir = Get-ChildItem "apps/lxmusic_app/build/windows" -Directory | Select-Object -ExpandProperty FullName
+          if (($releaseDir | Measure-Object).Count -ne 1) {
+            Write-Error "Expected exactly one Windows build directory, found $(($releaseDir | Measure-Object).Count)"
+            exit 1
+          }
+          Compress-Archive -Path "$releaseDir/runner/Release/*" -DestinationPath $archive -Force
+
+      - name: Upload Windows Arm64 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-gui-windows-arm64
+          path: dist/*.zip
+          if-no-files-found: error
+
+  build-gui-macos:
+    needs: prepare
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Enable Flutter targets
+        run: flutter config --enable-macos-desktop
+
+      - name: Resolve dependencies
+        run: flutter pub get
+
+      - name: Build macOS app
+        working-directory: apps/lxmusic_app
+        run: flutter build macos --release
+
+      - name: Package macOS artifact
+        shell: bash
+        run: |
+          mkdir -p dist
+          shopt -s nullglob
+          app_bundles=(apps/lxmusic_app/build/macos/Build/Products/Release/*.app)
+          if [ "${#app_bundles[@]}" -ne 1 ]; then
+            echo "Expected exactly one .app bundle, found ${#app_bundles[@]}" >&2
+            exit 1
+          fi
+          /usr/bin/ditto -c -k --sequesterRsrc --keepParent \
+            "${app_bundles[0]}" \
+            "dist/lxmusic-ng-app-macos-${{ needs.prepare.outputs.version }}.zip"
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-gui-macos
+          path: dist/*.zip
+          if-no-files-found: error
+
+  build-gui-ios-check:
+    needs: prepare
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Resolve dependencies
+        run: flutter pub get
+
+      - name: Build iOS without codesign
+        working-directory: apps/lxmusic_app
+        run: flutter build ios --release --no-codesign
+
+  publish-release:
+    needs:
+      - prepare
+      - build-cli
+      - build-gui-linux-web-android
+      - build-gui-linux-arm64
+      - build-gui-windows
+      - build-gui-windows-arm64
+      - build-gui-macos
+      - build-gui-ios-check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: release-*
+          merge-multiple: true
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ needs.prepare.outputs.version }}
+          tag_name: ${{ needs.prepare.outputs.version }}
+          files: dist/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true

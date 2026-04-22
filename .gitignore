@@ -14,3 +14,5 @@ build/
 .vscode/
 .codex
 result.mid
+apps/lxmusic_app/android/release.jks
+apps/lxmusic_app/android/key.properties
