@@ -1,10 +1,13 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:lxmusic_app/core/platform/file_store.dart';
 import 'package:lxmusic_app/features/library/models/music_file.dart';
 import 'package:lxmusic_app/features/workbench/models/song_config.dart';
 import 'package:lxmusic_app/features/workbench/providers/workbench_provider.dart';
 import 'package:lxmusic_app/features/workbench/services/song_config_service.dart';
+import 'package:lxmusic_assets/lxmusic_assets.dart';
 import 'package:lxmusic_core/lxmusic_core.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -80,6 +83,78 @@ void main() {
     expect(loaded, isNotNull);
     expect(loaded!.recommendedPitchOffset, 5);
     expect(mismatch, isNull);
+  });
+
+  test('upgrades recognized legacy target mappings when loading', () async {
+    final profiles = YamlGameProfileRepository(bundledYamlAssetBundle);
+    final layouts = YamlLayoutRepository(bundledYamlAssetBundle);
+    final profile = profiles.load('genshin');
+    final variant = profile.variantById('old_lyre')!;
+    final layout = layouts.load('generic_3x7');
+    final legacyPitches = layout.pitchToKeyId.keys.toList()..sort();
+    final file = MusicFile(
+      path: '/unused/old-lyre.mid',
+      fileName: 'old-lyre.mid',
+      formatId: 'midi',
+    );
+    final legacy = SongConfig(
+      fileName: file.fileName,
+      profileId: profile.id,
+      variantId: variant.id,
+      layoutId: layout.id,
+      steps: <TransformStep>[
+        TransformStep(
+          type: 'legalizeTargetNoteRange',
+          config: <String, Object?>{
+            'supportedPitches': legacyPitches,
+            'semiToneRoundingMode': 'floor',
+          },
+        ),
+        TransformStep(
+          type: 'noteToKey',
+          config: <String, Object?>{
+            'pitchToKeyId': layout.pitchToKeyId.map(
+              (pitch, keyId) => MapEntry(pitch.toString(), keyId),
+            ),
+          },
+        ),
+      ],
+    );
+    const store = SongConfigStore();
+    await store.save(legacy);
+    final service = SongConfigService(
+      parserRegistry: ParserRegistry(const <String, ScoreParser>{}),
+      configStore: store,
+      fileStore: const _UnusedFileStore(),
+    );
+
+    final upgraded = await service.ensureForTarget(
+      file: file,
+      profile: profile,
+      variant: variant,
+      layout: layout,
+    );
+
+    final legalize = upgraded.steps.singleWhere(
+      (step) => step.type == 'legalizeTargetNoteRange',
+    );
+    final noteToKey = upgraded.steps.singleWhere(
+      (step) => step.type == 'noteToKey',
+    );
+    expect(legalize.config['mappingMode'], targetDerivedMappingMode);
+    expect(legalize.config['wrapPitchRange'], <int>[48, 83]);
+    expect(legalize.config['supportedPitches'], contains(82));
+    expect(legalize.config['supportedPitches'], isNot(contains(83)));
+    expect(noteToKey.config['pitchToKeyId'], containsPair('82', 'B5'));
+    expect(noteToKey.config['pitchToKeyId'], isNot(contains('83')));
+
+    final persisted = await store.load(SongConfigKey.fromConfig(upgraded));
+    expect(
+      persisted!.steps
+          .singleWhere((step) => step.type == 'noteToKey')
+          .config['mappingMode'],
+      targetDerivedMappingMode,
+    );
   });
 
   test('JSON round-trip preserves unknown steps and their config', () {
@@ -582,4 +657,34 @@ void main() {
       <String, Object?>{'maxIntervalMs': 50, 'maxBatchSize': 19},
     );
   });
+}
+
+class _UnusedFileStore implements PlatformFileStore {
+  const _UnusedFileStore();
+
+  Never _unused() => throw StateError('File store should not be used.');
+
+  @override
+  Future<void> deleteFile(String path) async => _unused();
+
+  @override
+  Future<bool> exists(String path) async => _unused();
+
+  @override
+  Future<String> importBytes({
+    required String fileName,
+    required Uint8List bytes,
+  }) async => _unused();
+
+  @override
+  Future<String> importFile({
+    required String sourcePath,
+    required String fileName,
+  }) async => _unused();
+
+  @override
+  Future<Uint8List> readBytes(String path) async => _unused();
+
+  @override
+  Future<void> writeBytes(String path, Uint8List bytes) async => _unused();
 }

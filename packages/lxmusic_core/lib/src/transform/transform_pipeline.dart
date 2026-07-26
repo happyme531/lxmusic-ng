@@ -1,3 +1,4 @@
+import '../domain/game_profile.dart';
 import '../domain/score.dart';
 import 'pass_options.dart';
 import 'passes.dart';
@@ -11,6 +12,32 @@ class TransformStep {
 
   final String type;
   final Map<String, Object?> config;
+}
+
+/// Resolves the authoritative custom key map from the pipeline that produced
+/// a score. Note attrs are transformation output and must not select custom
+/// mapping behavior by themselves.
+///
+/// The last NoteToKey step wins, matching pipeline execution order. A missing
+/// mapping mode retains the historical custom-map default.
+Map<int, String>? resolveCustomPitchToKeyId(Iterable<TransformStep> steps) {
+  TransformStep? lastNoteToKey;
+  for (final step in steps) {
+    if (step.type == 'noteToKey') {
+      lastNoteToKey = step;
+    }
+  }
+  if (lastNoteToKey == null) {
+    return null;
+  }
+  final mappingMode =
+      lastNoteToKey.config['mappingMode'] as String? ?? customTargetMappingMode;
+  if (mappingMode != customTargetMappingMode) {
+    return null;
+  }
+  return Map<int, String>.unmodifiable(
+    _decodePitchToKeyId(lastNoteToKey.config['pitchToKeyId']),
+  );
 }
 
 class TransformPipeline {
@@ -91,14 +118,18 @@ class TransformPipeline {
             ),
             wrapHigherOctave: step.config['wrapHigherOctave'] as int? ?? 0,
             wrapLowerOctave: step.config['wrapLowerOctave'] as int? ?? 0,
+            wrapPitchRange: _decodeWrapPitchRange(
+              step.config['wrapPitchRange'],
+            ),
           ),
         ).run(score);
       case 'noteToKey':
         return NoteToKeyPass(
           NoteToKeyOptions(
-            pitchToKeyId: Map<String, Object?>.from(
-              step.config['pitchToKeyId'] as Map? ?? const <String, Object?>{},
-            ).map((key, value) => MapEntry(int.parse(key), value as String)),
+            pitchToKeyId: _decodePitchToKeyId(step.config['pitchToKeyId']),
+            mappingMode:
+                step.config['mappingMode'] as String? ??
+                customTargetMappingMode,
           ),
         ).run(score);
       case 'bindLyrics':
@@ -172,7 +203,8 @@ class TransformPipeline {
             keepHigherPitches:
                 step.config['keepHigherPitches'] as bool? ?? true,
             limitMode: step.config['limitMode'] as String? ?? 'delete',
-            splitDelayMs: step.config['splitDelayMs'] as int? ??
+            splitDelayMs:
+                step.config['splitDelayMs'] as int? ??
                 step.config['splitDelay'] as int? ??
                 5,
             selectMode: step.config['selectMode'] as String?,
@@ -191,4 +223,24 @@ class TransformPipeline {
         throw ArgumentError('Unknown transform step type "${step.type}".');
     }
   }
+}
+
+Map<int, String> _decodePitchToKeyId(Object? value) {
+  return Map<String, Object?>.from(
+    value as Map? ?? const <String, Object?>{},
+  ).map((key, value) => MapEntry(int.parse(key), value as String));
+}
+
+IntRange? _decodeWrapPitchRange(Object? value) {
+  if (value == null) {
+    return null;
+  }
+  if (value is! List || value.length != 2) {
+    throw ArgumentError.value(
+      value,
+      'wrapPitchRange',
+      'must contain exactly two integer pitches',
+    );
+  }
+  return IntRange(value[0] as int, value[1] as int);
 }

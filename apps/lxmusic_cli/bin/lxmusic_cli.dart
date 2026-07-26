@@ -245,6 +245,15 @@ void _runValidate(ArgResults command) {
           'Layout ${layout.id} referenced by profile ${profile.id} has no keys.',
         );
       }
+      for (final variant in profile.variants) {
+        final playablePitchToKeyId = variant.playablePitchToKeyId(layout);
+        if (playablePitchToKeyId.isEmpty) {
+          throw StateError(
+            'Layout ${layout.id} has no playable keys for variant '
+            '${profile.id}/${variant.id}.',
+          );
+        }
+      }
     }
   }
 
@@ -297,9 +306,19 @@ Future<void> _runConvert(ArgResults command, List<String> argv) async {
   final config = ((command['analyze'] as bool) || configPath == null)
       ? _analyzeInput(command, inputFormatId: inputFormat).config
       : _loadConversionConfig(configPath);
-  _applyConfigOverrides(config, _commandOptions(command));
+  final configOverrides = _commandOptions(command);
+  _applyConfigOverrides(config, configOverrides);
+  final target = _resolveTargetFromConfig(config, assets);
+  _refreshConversionConfigTargetMapping(config, target);
+  _applyConfigOverrides(
+    config,
+    configOverrides,
+    markCustomTargetMappings: true,
+  );
+  _refreshConversionConfigTargetMapping(config, target);
 
-  final transformed = _runPipelineFromConfig(score, config);
+  final transformSteps = _transformStepsFromConfig(config);
+  final transformed = TransformPipeline(transformSteps).run(score);
   final ns = transformed.report.noteSummary!;
   stdout.writeln(
     '[lxmusic] converted score: ${transformed.score.tracks.length} track(s), '
@@ -315,13 +334,13 @@ Future<void> _runConvert(ArgResults command, List<String> argv) async {
     ns.outputNoteCount,
   );
 
-  final target = _resolveTargetFromConfig(config, assets);
   final semanticPlan = const PerformancePlanner().plan(
     transformed.score,
     PlanningContext(
       profile: target.profile,
       layout: target.layout,
       variant: target.variant,
+      customPitchToKeyId: resolveCustomPitchToKeyId(transformSteps),
     ),
   );
 
@@ -408,9 +427,9 @@ Future<void> _runConvert(ArgResults command, List<String> argv) async {
       if (outputPath == null || outputPath.isEmpty) {
         throw ArgumentError('output-format midi requires --output.');
       }
-      File(outputPath).writeAsBytesSync(
-        const MidiScoreEncoder().encode(transformed.score),
-      );
+      File(
+        outputPath,
+      ).writeAsBytesSync(const MidiScoreEncoder().encode(transformed.score));
       stdout.writeln('[lxmusic] wrote midi output to $outputPath');
       return;
     default:
@@ -739,11 +758,31 @@ SemiToneRoundingMode _resolveSemiToneRoundingMode(ArgResults command) {
   return SemiToneRoundingMode.floor;
 }
 
-void _applyConfigOverrides(Map<String, Object?> config, List<String> options) {
+void _applyConfigOverrides(
+  Map<String, Object?> config,
+  List<String> options, {
+  bool markCustomTargetMappings = false,
+}) {
   for (final option in options) {
     final parsed = _parseOptionAssignment(option);
     if (parsed.path.isEmpty) {
       throw ArgumentError('Invalid --option "$option".');
+    }
+    if (parsed.path.first == 'target') {
+      throw ArgumentError(
+        'target.* cannot be changed with --option because target-dependent '
+        'analysis would become stale. Use --profile/--variant/--layout when '
+        'analyzing, or update the complete conversion config.',
+      );
+    }
+    if (_overridesTargetMappingMetadata(
+      parsed.path.first,
+      parsed.path.skip(1),
+    )) {
+      throw ArgumentError(
+        '${parsed.path.first}.${parsed.path[1]} is internal target-mapping '
+        'metadata and cannot be changed with --option.',
+      );
     }
     if (_topLevelConfigKeys.contains(parsed.path.first)) {
       _setNestedConfigValue(
@@ -759,6 +798,52 @@ void _applyConfigOverrides(Map<String, Object?> config, List<String> options) {
       path: parsed.path.skip(1).toList(),
       value: _parseOptionValue(parsed.rawValue),
     );
+    if (markCustomTargetMappings &&
+        _overridesTargetMapping(parsed.path.first, parsed.path.skip(1))) {
+      _markPipelineTargetMappingsCustom(config);
+    }
+  }
+}
+
+bool _overridesTargetMappingMetadata(String stepType, Iterable<String> path) {
+  final fields = path.toList();
+  if (fields.isEmpty ||
+      (stepType != 'legalizeTargetNoteRange' && stepType != 'noteToKey')) {
+    return false;
+  }
+  return fields.first == 'mappingMode' ||
+      fields.first == 'mappingSemanticsVersion';
+}
+
+bool _overridesTargetMapping(String stepType, Iterable<String> path) {
+  final field = path.first;
+  return switch (stepType) {
+    'legalizeTargetNoteRange' =>
+      field == 'supportedPitches' || field == 'wrapPitchRange',
+    'noteToKey' => field == 'pitchToKeyId',
+    _ => false,
+  };
+}
+
+void _markPipelineTargetMappingsCustom(Map<String, Object?> config) {
+  final pipeline = Map<String, Object?>.from(
+    config['pipeline'] as Map? ?? const <String, Object?>{},
+  );
+  config['pipeline'] = pipeline;
+  final steps = (pipeline['steps'] as List<Object?>? ?? const <Object?>[])
+      .map((item) => Map<String, Object?>.from(item! as Map))
+      .toList();
+  pipeline['steps'] = steps;
+  for (final step in steps) {
+    final type = step['type'];
+    if (type != 'legalizeTargetNoteRange' && type != 'noteToKey') {
+      continue;
+    }
+    final stepConfig = Map<String, Object?>.from(
+      step['config'] as Map? ?? const <String, Object?>{},
+    );
+    stepConfig['mappingMode'] = customTargetMappingMode;
+    step['config'] = stepConfig;
   }
 }
 
@@ -893,7 +978,19 @@ void _setPipelineStepConfigValue(
     trackDisableThreshold: _parseTrackDisableThreshold(command),
   );
   final config = analysis.toConfigJson(roundingMode: roundingMode);
-  _applyConfigOverrides(config, _commandOptions(command));
+  final configOverrides = _commandOptions(command);
+  _applyConfigOverrides(config, configOverrides);
+  final configuredTarget = _resolveTargetFromConfig(
+    config,
+    bundledYamlAssetBundle,
+  );
+  _refreshConversionConfigTargetMapping(config, configuredTarget);
+  _applyConfigOverrides(
+    config,
+    configOverrides,
+    markCustomTargetMappings: true,
+  );
+  _refreshConversionConfigTargetMapping(config, configuredTarget);
 
   return (analysis: analysis.toAnalysisJson(), config: config);
 }
@@ -946,12 +1043,9 @@ _resolveTargetFromConfig(Map<String, Object?> config, YamlAssetBundle assets) {
   return (profile: profile, variant: variant, layout: layout);
 }
 
-({Score score, TransformReport report}) _runPipelineFromConfig(
-  Score score,
-  Map<String, Object?> config,
-) {
+List<TransformStep> _transformStepsFromConfig(Map<String, Object?> config) {
   final pipeline = Map<String, Object?>.from(config['pipeline'] as Map);
-  final steps = (pipeline['steps'] as List<Object?>? ?? const <Object?>[])
+  return (pipeline['steps'] as List<Object?>? ?? const <Object?>[])
       .map((step) => Map<String, Object?>.from(step! as Map))
       .map(
         (step) => TransformStep(
@@ -962,7 +1056,32 @@ _resolveTargetFromConfig(Map<String, Object?> config, YamlAssetBundle assets) {
         ),
       )
       .toList();
-  return TransformPipeline(steps).run(score);
+}
+
+void _refreshConversionConfigTargetMapping(
+  Map<String, Object?> config,
+  ({GameProfile profile, InstrumentVariant variant, KeyLayout layout}) target,
+) {
+  final refreshed = refreshTargetMappingSteps(
+    steps: _transformStepsFromConfig(config),
+    target: AnalysisTarget(
+      profile: target.profile,
+      variant: target.variant,
+      layout: target.layout,
+    ),
+  );
+  if (!refreshed.changed) {
+    return;
+  }
+
+  final pipeline = Map<String, Object?>.from(config['pipeline'] as Map);
+  pipeline['steps'] = refreshed.steps
+      .map(
+        (step) => <String, Object?>{'type': step.type, 'config': step.config},
+      )
+      .toList();
+  config['pipeline'] = pipeline;
+  config['version'] = variantMappingSemanticsVersion;
 }
 
 Map<String, Object?> _loadConversionConfig(String path) {

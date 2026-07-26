@@ -1,6 +1,11 @@
+import '../domain/game_profile.dart';
 import '../domain/score.dart';
 
 enum SemiToneRoundingMode { none, floor, ceil, drop, both, alternating }
+
+const String customTargetMappingMode = 'custom';
+const String targetDerivedMappingMode = 'target';
+const String noteKeyMappingModeAttr = 'keyMappingMode';
 
 class LegalizeTargetNoteRangeOptions {
   const LegalizeTargetNoteRangeOptions({
@@ -8,18 +13,33 @@ class LegalizeTargetNoteRangeOptions {
     this.semiToneRoundingMode = SemiToneRoundingMode.floor,
     this.wrapHigherOctave = 0,
     this.wrapLowerOctave = 0,
+    this.wrapPitchRange,
   });
 
   final List<int> supportedPitches;
   final SemiToneRoundingMode semiToneRoundingMode;
   final int wrapHigherOctave;
   final int wrapLowerOctave;
+
+  /// Nominal/physical pitch bounds used only to decide octave wrapping.
+  ///
+  /// When omitted, the first and last [supportedPitches] retain the legacy
+  /// behavior as the wrapping bounds. This can differ from the effective
+  /// pitches when an instrument variant retunes its physical keys.
+  final IntRange? wrapPitchRange;
 }
 
 class NoteToKeyOptions {
-  const NoteToKeyOptions({required this.pitchToKeyId});
+  const NoteToKeyOptions({
+    required this.pitchToKeyId,
+    this.mappingMode = customTargetMappingMode,
+  });
 
   final Map<int, String> pitchToKeyId;
+
+  /// Marks whether downstream consumers should revalidate this key against
+  /// the current target or honor it as an explicit custom mapping.
+  final String mappingMode;
 }
 
 class BindLyricsOptions {
@@ -121,7 +141,8 @@ class ChordNoteCountLimitOptions {
   final String? selectMode;
   final int randomSeed;
 
-  String get effectiveSelectMode => selectMode ?? (keepHigherPitches ? 'high' : 'low');
+  String get effectiveSelectMode =>
+      selectMode ?? (keepHigherPitches ? 'high' : 'low');
 }
 
 class HumanifyOptions {

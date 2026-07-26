@@ -5,11 +5,18 @@ class PlanningContext {
     required this.profile,
     required this.layout,
     required this.variant,
+    this.customPitchToKeyId,
   });
 
   final GameProfile profile;
   final KeyLayout layout;
   final InstrumentVariant variant;
+
+  /// Authoritative custom map resolved from the current pipeline config.
+  ///
+  /// When null, planning derives keys from [variant] and [layout]. Note attrs
+  /// are never allowed to opt into custom behavior on their own.
+  final Map<int, String>? customPitchToKeyId;
 }
 
 class BackendConstraints {

@@ -20,7 +20,8 @@ class LayoutPreviewScreen extends ConsumerStatefulWidget {
   final String? initialSelectedKeyId;
 
   @override
-  ConsumerState<LayoutPreviewScreen> createState() => _LayoutPreviewScreenState();
+  ConsumerState<LayoutPreviewScreen> createState() =>
+      _LayoutPreviewScreenState();
 }
 
 class _LayoutPreviewScreenState extends ConsumerState<LayoutPreviewScreen> {
@@ -58,9 +59,7 @@ class _LayoutPreviewScreenState extends ConsumerState<LayoutPreviewScreen> {
     if (profile == null || layout == null) {
       return Scaffold(
         appBar: AppBar(title: const Text('键位预览')),
-        body: const Center(
-          child: Text('无法加载这个键位布局'),
-        ),
+        body: const Center(child: Text('无法加载这个键位布局')),
       );
     }
 
@@ -70,6 +69,9 @@ class _LayoutPreviewScreenState extends ConsumerState<LayoutPreviewScreen> {
         (layout.metadata['displayName'] as String?) ??
         layout.id;
     final selectedKey = _resolveSelectedKey(layout);
+    // TODO(variant-layout-preview): Carry variantId into this route before
+    // presenting effective pitches here; this screen currently documents the
+    // nominal physical layout only.
     final displayConfig = LayoutPreviewDisplayConfig(labelMode: _labelMode);
 
     return Scaffold(
@@ -83,8 +85,8 @@ class _LayoutPreviewScreenState extends ConsumerState<LayoutPreviewScreen> {
             Text(
               profile.displayName,
               style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                  ),
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
             ),
           ],
         ),
@@ -115,21 +117,17 @@ class _LayoutPreviewScreenState extends ConsumerState<LayoutPreviewScreen> {
                               crossAxisAlignment: WrapCrossAlignment.center,
                               children: [
                                 Text(
-                                  '布局预览',
-                                  style: Theme.of(context)
-                                      .textTheme
-                                      .titleMedium
+                                  '基础布局预览',
+                                  style: Theme.of(context).textTheme.titleMedium
                                       ?.copyWith(fontWeight: FontWeight.w700),
                                 ),
                                 Text(
                                   '${layout.keys.length} 键',
-                                  style: Theme.of(context)
-                                      .textTheme
-                                      .bodyMedium
+                                  style: Theme.of(context).textTheme.bodyMedium
                                       ?.copyWith(
-                                        color: Theme.of(context)
-                                            .colorScheme
-                                            .onSurfaceVariant,
+                                        color: Theme.of(
+                                          context,
+                                        ).colorScheme.onSurfaceVariant,
                                       ),
                                 ),
                                 SegmentedButton<LayoutLabelMode>(
@@ -151,6 +149,16 @@ class _LayoutPreviewScreenState extends ConsumerState<LayoutPreviewScreen> {
                                   },
                                 ),
                               ],
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              '显示布局定义的标称音高；乐器变体的实际音高请在乐曲预览中查看。',
+                              style: Theme.of(context).textTheme.bodySmall
+                                  ?.copyWith(
+                                    color: Theme.of(
+                                      context,
+                                    ).colorScheme.onSurfaceVariant,
+                                  ),
                             ),
                             const SizedBox(height: 18),
                             ScrollConfiguration(
@@ -259,16 +267,13 @@ class _PreviewScrollBehavior extends MaterialScrollBehavior {
 
   @override
   Set<PointerDeviceKind> get dragDevices => <PointerDeviceKind>{
-        ...super.dragDevices,
-        PointerDeviceKind.mouse,
-      };
+    ...super.dragDevices,
+    PointerDeviceKind.mouse,
+  };
 }
 
 class _SelectedKeyCard extends StatelessWidget {
-  const _SelectedKeyCard({
-    required this.selectedKey,
-    required this.labelMode,
-  });
+  const _SelectedKeyCard({required this.selectedKey, required this.labelMode});
 
   final KeyDefinition? selectedKey;
   final LayoutLabelMode labelMode;
@@ -287,8 +292,8 @@ class _SelectedKeyCard extends StatelessWidget {
                   Text(
                     '当前按键',
                     style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                          fontWeight: FontWeight.w700,
-                        ),
+                      fontWeight: FontWeight.w700,
+                    ),
                   ),
                   const SizedBox(height: 12),
                   Wrap(
@@ -334,11 +339,7 @@ class _SelectedKeyCard extends StatelessWidget {
 }
 
 class _InfoPill extends StatelessWidget {
-  const _InfoPill({
-    this.valueKey,
-    required this.label,
-    required this.value,
-  });
+  const _InfoPill({this.valueKey, required this.label, required this.value});
 
   final Key? valueKey;
   final String label;
@@ -359,17 +360,17 @@ class _InfoPill extends StatelessWidget {
           Text(
             '$label ',
             style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  color: scheme.onSurfaceVariant,
-                  fontWeight: FontWeight.w600,
-                ),
+              color: scheme.onSurfaceVariant,
+              fontWeight: FontWeight.w600,
+            ),
           ),
           Text(
             value,
             key: valueKey,
             style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  color: scheme.onSurface,
-                  fontWeight: FontWeight.w700,
-                ),
+              color: scheme.onSurface,
+              fontWeight: FontWeight.w700,
+            ),
           ),
         ],
       ),

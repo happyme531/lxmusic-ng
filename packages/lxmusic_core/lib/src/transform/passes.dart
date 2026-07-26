@@ -122,8 +122,12 @@ class LegalizeTargetNoteRangePass {
 
     final supported = options.supportedPitches.toSet();
     final orderedPitches = supported.toList()..sort();
-    final minPitch = orderedPitches.first;
-    final maxPitch = orderedPitches.last;
+    final wrapPitchRange = options.wrapPitchRange;
+    if (wrapPitchRange != null && wrapPitchRange.min > wrapPitchRange.max) {
+      throw ArgumentError('wrapPitchRange.min must not exceed max.');
+    }
+    final minPitch = wrapPitchRange?.min ?? orderedPitches.first;
+    final maxPitch = wrapPitchRange?.max ?? orderedPitches.last;
     var underFlowedNoteCount = 0;
     var overFlowedNoteCount = 0;
     var roundedNoteCount = 0;
@@ -137,6 +141,11 @@ class LegalizeTargetNoteRangePass {
 
       for (final note in track.notes) {
         var pitch = note.pitch;
+
+        if (supported.contains(pitch)) {
+          output.add(note.copyWith(pitch: pitch));
+          continue;
+        }
 
         if (pitch < minPitch) {
           if (pitch >= minPitch - options.wrapLowerOctave * 12) {
@@ -273,6 +282,7 @@ class NoteToKeyPass {
             ...note.attrs,
             'keyId': keyId,
             'mappedPitch': note.pitch,
+            noteKeyMappingModeAttr: options.mappingMode,
           },
         );
       }).toList();

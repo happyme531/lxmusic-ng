@@ -72,6 +72,19 @@ int previewTotalDurationMs(
   return totalDurationMs;
 }
 
+@visibleForTesting
+int? effectivePreviewPitchForLayoutKey(
+  InstrumentVariant variant,
+  KeyDefinition key,
+) {
+  final layoutPitch = key.pitch;
+  if (layoutPitch == null) {
+    return null;
+  }
+  final effectivePitch = variant.effectivePitchForLayoutPitch(layoutPitch);
+  return variant.supportsPitch(effectivePitch) ? effectivePitch : null;
+}
+
 class PreviewScreen extends ConsumerStatefulWidget {
   const PreviewScreen({super.key});
 
@@ -278,9 +291,11 @@ class _PreviewScreenState extends ConsumerState<PreviewScreen> {
                             Positioned.fill(
                               child: _PreviewKeyboard(
                                 geometry: geometry,
+                                variant: session.variant,
                                 activeKeyIds: activeKeyIds,
                                 keyboardZoom: _keyboardZoom,
-                                onPress: _handleKeyboardPress,
+                                onPress: (key) =>
+                                    _handleKeyboardPress(key, session.variant),
                                 onRelease: _handleKeyboardRelease,
                               ),
                             ),
@@ -527,14 +542,17 @@ class _PreviewScreenState extends ConsumerState<PreviewScreen> {
     }
   }
 
-  Future<void> _handleKeyboardPress(PreviewKeyboardKey key) async {
-    setState(() {
-      _heldManualKeyIds.add(key.key.id);
-    });
-    final pitch = key.key.pitch;
+  Future<void> _handleKeyboardPress(
+    PreviewKeyboardKey key,
+    InstrumentVariant variant,
+  ) async {
+    final pitch = effectivePreviewPitchForLayoutKey(variant, key.key);
     if (pitch == null) {
       return;
     }
+    setState(() {
+      _heldManualKeyIds.add(key.key.id);
+    });
     try {
       await _synth.startTone(token: key.key.id, pitch: pitch, volume: 0.2);
       if (!mounted) return;
@@ -1248,6 +1266,7 @@ class _LaneGridPainter extends CustomPainter {
 class _PreviewKeyboard extends StatelessWidget {
   const _PreviewKeyboard({
     required this.geometry,
+    required this.variant,
     required this.activeKeyIds,
     required this.keyboardZoom,
     required this.onPress,
@@ -1255,6 +1274,7 @@ class _PreviewKeyboard extends StatelessWidget {
   });
 
   final PreviewLayoutGeometry geometry;
+  final InstrumentVariant variant;
   final Set<String> activeKeyIds;
   final double keyboardZoom;
   final ValueChanged<PreviewKeyboardKey> onPress;
@@ -1301,6 +1321,12 @@ class _PreviewKeyboard extends StatelessWidget {
                   height: keySize,
                   child: _KeyboardKeyButton(
                     keyDefinition: key,
+                    effectivePitch: effectivePreviewPitchForLayoutKey(
+                      variant,
+                      key,
+                    ),
+                    enabled:
+                        effectivePreviewPitchForLayoutKey(variant, key) != null,
                     active: activeKeyIds.contains(key.id),
                     onPress: () => onPress(
                       PreviewKeyboardKey(
@@ -1327,12 +1353,16 @@ class _PreviewKeyboard extends StatelessWidget {
 class _KeyboardKeyButton extends StatelessWidget {
   const _KeyboardKeyButton({
     required this.keyDefinition,
+    required this.effectivePitch,
+    required this.enabled,
     required this.active,
     required this.onPress,
     required this.onRelease,
   });
 
   final KeyDefinition keyDefinition;
+  final int? effectivePitch;
+  final bool enabled;
   final bool active;
   final VoidCallback onPress;
   final VoidCallback onRelease;
@@ -1340,61 +1370,64 @@ class _KeyboardKeyButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final pitch = keyDefinition.pitch;
+    final pitch = effectivePitch;
     return Material(
       color: Colors.transparent,
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTapDown: (_) => onPress(),
-        onTapUp: (_) => onRelease(),
-        onTapCancel: onRelease,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 90),
-          decoration: BoxDecoration(
-            color: active ? scheme.primary : scheme.surfaceContainerHighest,
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(
-              color: active ? scheme.primary : scheme.outlineVariant,
-              width: active ? 2 : 1,
-            ),
-            boxShadow: [
-              BoxShadow(
-                color: scheme.shadow.withValues(alpha: active ? 0.12 : 0.04),
-                blurRadius: active ? 16 : 6,
-                offset: const Offset(0, 4),
+      child: Opacity(
+        opacity: enabled ? 1 : 0.35,
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTapDown: enabled ? (_) => onPress() : null,
+          onTapUp: enabled ? (_) => onRelease() : null,
+          onTapCancel: enabled ? onRelease : null,
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 90),
+            decoration: BoxDecoration(
+              color: active ? scheme.primary : scheme.surfaceContainerHighest,
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(
+                color: active ? scheme.primary : scheme.outlineVariant,
+                width: active ? 2 : 1,
               ),
-            ],
-          ),
-          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Text(
-                keyDefinition.id,
-                maxLines: 1,
-                overflow: TextOverflow.fade,
-                style: TextStyle(
-                  fontSize: 11,
-                  fontWeight: FontWeight.w700,
-                  color: active ? scheme.onPrimary : scheme.onSurface,
+              boxShadow: [
+                BoxShadow(
+                  color: scheme.shadow.withValues(alpha: active ? 0.12 : 0.04),
+                  blurRadius: active ? 16 : 6,
+                  offset: const Offset(0, 4),
                 ),
-              ),
-              if (pitch != null)
+              ],
+            ),
+            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
                 Text(
-                  LayoutKeyLabelFormatter.format(
-                    pitch: pitch,
-                    mode: LayoutLabelMode.numbered,
-                  ),
+                  keyDefinition.id,
                   maxLines: 1,
                   overflow: TextOverflow.fade,
                   style: TextStyle(
-                    fontSize: 10,
-                    color: active
-                        ? scheme.onPrimary.withValues(alpha: 0.88)
-                        : scheme.onSurfaceVariant,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                    color: active ? scheme.onPrimary : scheme.onSurface,
                   ),
                 ),
-            ],
+                if (pitch != null)
+                  Text(
+                    LayoutKeyLabelFormatter.format(
+                      pitch: pitch,
+                      mode: LayoutLabelMode.numbered,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.fade,
+                    style: TextStyle(
+                      fontSize: 10,
+                      color: active
+                          ? scheme.onPrimary.withValues(alpha: 0.88)
+                          : scheme.onSurfaceVariant,
+                    ),
+                  ),
+              ],
+            ),
           ),
         ),
       ),

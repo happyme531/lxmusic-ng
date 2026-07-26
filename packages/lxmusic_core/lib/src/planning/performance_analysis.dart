@@ -5,6 +5,8 @@ import '../transform/passes.dart';
 import '../transform/recommended_pipeline_policy.dart';
 import '../transform/transform_pipeline.dart';
 
+const int variantMappingSemanticsVersion = 2;
+
 class AnalysisTarget {
   const AnalysisTarget({
     required this.profile,
@@ -16,12 +18,12 @@ class AnalysisTarget {
   final InstrumentVariant variant;
   final KeyLayout layout;
 
+  Map<int, String> get playablePitchToKeyId {
+    return variant.playablePitchToKeyId(layout);
+  }
+
   List<int> get supportedPitches {
-    final pitches =
-        layout.pitchToKeyId.keys
-            .where((pitch) => variant.supportsPitch(pitch))
-            .toList()
-          ..sort();
+    final pitches = playablePitchToKeyId.keys.toList()..sort();
     if (pitches.isEmpty) {
       throw StateError(
         'Layout ${layout.id} has no playable pitches for variant ${variant.id}.',
@@ -30,19 +32,215 @@ class AnalysisTarget {
     return pitches;
   }
 
+  IntRange get nominalPlayablePitchRange {
+    final pitches = variant.playableLayoutPitches(layout);
+    if (pitches.isEmpty) {
+      throw StateError(
+        'Layout ${layout.id} has no playable pitches for variant ${variant.id}.',
+      );
+    }
+    return IntRange(pitches.first, pitches.last);
+  }
+
+  List<int> get legacySupportedPitches {
+    final pitches =
+        layout.pitchToKeyId.keys.where(variant.supportsPitch).toList()..sort();
+    return pitches;
+  }
+
+  Map<String, String> get legacyPitchToKeyId {
+    return layout.pitchToKeyId.map(
+      (pitch, keyId) => MapEntry(pitch.toString(), keyId),
+    );
+  }
+
   int get sameKeyMinIntervalMs =>
       variant.sameKeyMinIntervalOverrideMs ?? profile.sameKeyMinIntervalMs;
 
   Map<String, Object?> toJson() {
     final supported = supportedPitches;
+    final nominalRange = nominalPlayablePitchRange;
     return <String, Object?>{
       'profileId': profile.id,
       'variantId': variant.id,
       'layoutId': layout.id,
       'playablePitchRange': <int>[supported.first, supported.last],
+      'nominalWrapPitchRange': <int>[nominalRange.min, nominalRange.max],
       'playablePitchCount': supported.length,
     };
   }
+}
+
+/// Refreshes target-derived Legalize/NoteToKey mappings as one pitch-domain
+/// unit. Unmarked values are upgraded only when both sides match a known
+/// generated shape; otherwise the pair is preserved and marked custom.
+/// Explicitly target-derived steps remain refreshable independently because
+/// their provenance does not need to be inferred from a legacy pair.
+({List<TransformStep> steps, bool changed}) refreshTargetMappingSteps({
+  required Iterable<TransformStep> steps,
+  required AnalysisTarget target,
+}) {
+  final original = steps.toList();
+  final supportedPitches = target.supportedPitches;
+  final pitchToKeyId = target.playablePitchToKeyId.map(
+    (key, value) => MapEntry(key.toString(), value),
+  );
+  final nominalPitchRange = target.nominalPlayablePitchRange;
+  final wrapPitchRange = <int>[nominalPitchRange.min, nominalPitchRange.max];
+  final legacySupportedPitches = target.legacySupportedPitches;
+  final legacyPitchToKeyId = target.legacyPitchToKeyId;
+
+  final mappingSteps = original.where(_isTargetMappingStep).toList();
+  if (mappingSteps.isEmpty) {
+    return (steps: original, changed: false);
+  }
+
+  bool isRecognizedTargetMapping(TransformStep step) {
+    final mappingMode = step.config['mappingMode'];
+    if (mappingMode == targetDerivedMappingMode) {
+      return true;
+    }
+    if (mappingMode != null) {
+      return false;
+    }
+    return switch (step.type) {
+      'legalizeTargetNoteRange' =>
+        _intListEquals(step.config['supportedPitches'], supportedPitches) ||
+            _intListEquals(
+              step.config['supportedPitches'],
+              legacySupportedPitches,
+            ),
+      'noteToKey' =>
+        _stringMapEquals(step.config['pitchToKeyId'], pitchToKeyId) ||
+            _stringMapEquals(step.config['pitchToKeyId'], legacyPitchToKeyId),
+      _ => false,
+    };
+  }
+
+  final mappingTypes = mappingSteps.map((step) => step.type).toSet();
+  final hasCompletePair =
+      mappingTypes.contains('legalizeTargetNoteRange') &&
+      mappingTypes.contains('noteToKey');
+  final allExplicitlyTargetDerived = mappingSteps.every(
+    (step) => step.config['mappingMode'] == targetDerivedMappingMode,
+  );
+  final canRefreshAtomically =
+      mappingSteps.every(isRecognizedTargetMapping) &&
+      (hasCompletePair || allExplicitlyTargetDerived);
+
+  if (!canRefreshAtomically) {
+    var changed = false;
+    final preserved = original.map((step) {
+      if (!_isTargetMappingStep(step)) {
+        return step;
+      }
+      final mappingMode = step.config['mappingMode'];
+      if (mappingMode != null && mappingMode != targetDerivedMappingMode) {
+        return step;
+      }
+      changed = true;
+      return _markCustomMapping(step);
+    }).toList();
+    return (steps: preserved, changed: changed);
+  }
+
+  var changed = false;
+  final refreshed = <TransformStep>[];
+
+  for (final step in original) {
+    switch (step.type) {
+      case 'legalizeTargetNoteRange':
+        final isCurrent =
+            step.config['mappingMode'] == targetDerivedMappingMode &&
+            step.config['mappingSemanticsVersion'] ==
+                variantMappingSemanticsVersion &&
+            _intListEquals(step.config['supportedPitches'], supportedPitches) &&
+            _intListEquals(step.config['wrapPitchRange'], wrapPitchRange);
+        if (isCurrent) {
+          refreshed.add(step);
+          continue;
+        }
+        changed = true;
+        refreshed.add(
+          TransformStep(
+            type: step.type,
+            config: <String, Object?>{
+              ...step.config,
+              'supportedPitches': supportedPitches,
+              'wrapPitchRange': wrapPitchRange,
+              'mappingSemanticsVersion': variantMappingSemanticsVersion,
+              'mappingMode': targetDerivedMappingMode,
+            },
+          ),
+        );
+        continue;
+      case 'noteToKey':
+        final isCurrent =
+            step.config['mappingMode'] == targetDerivedMappingMode &&
+            step.config['mappingSemanticsVersion'] ==
+                variantMappingSemanticsVersion &&
+            _stringMapEquals(step.config['pitchToKeyId'], pitchToKeyId);
+        if (isCurrent) {
+          refreshed.add(step);
+          continue;
+        }
+        changed = true;
+        refreshed.add(
+          TransformStep(
+            type: step.type,
+            config: <String, Object?>{
+              ...step.config,
+              'pitchToKeyId': pitchToKeyId,
+              'mappingSemanticsVersion': variantMappingSemanticsVersion,
+              'mappingMode': targetDerivedMappingMode,
+            },
+          ),
+        );
+        continue;
+      default:
+        refreshed.add(step);
+    }
+  }
+
+  return (steps: refreshed, changed: changed);
+}
+
+bool _isTargetMappingStep(TransformStep step) {
+  return step.type == 'legalizeTargetNoteRange' || step.type == 'noteToKey';
+}
+
+TransformStep _markCustomMapping(TransformStep step) {
+  return TransformStep(
+    type: step.type,
+    config: <String, Object?>{
+      ...step.config,
+      'mappingMode': customTargetMappingMode,
+    },
+  );
+}
+
+bool _intListEquals(Object? actual, List<int> expected) {
+  if (actual is! List || actual.length != expected.length) {
+    return false;
+  }
+  for (var index = 0; index < expected.length; index++) {
+    if (actual[index] != expected[index]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool _stringMapEquals(Object? actual, Map<String, String> expected) {
+  if (actual is! Map || actual.length != expected.length) {
+    return false;
+  }
+  for (final entry in expected.entries) {
+    if (actual[entry.key] != entry.value) {
+      return false;
+    }
+  }
+  return true;
 }
 
 class PitchOffsetCandidate {
@@ -52,6 +250,7 @@ class PitchOffsetCandidate {
     required this.overFlowedNoteCount,
     required this.underFlowedNoteCount,
     required this.roundedNoteCount,
+    this.middleFailedNoteCount = 0,
   });
 
   final int offset;
@@ -59,6 +258,7 @@ class PitchOffsetCandidate {
   final int overFlowedNoteCount;
   final int underFlowedNoteCount;
   final int roundedNoteCount;
+  final int middleFailedNoteCount;
 
   Map<String, Object?> toJson() {
     return <String, Object?>{
@@ -67,6 +267,7 @@ class PitchOffsetCandidate {
       'overFlowedNoteCount': overFlowedNoteCount,
       'underFlowedNoteCount': underFlowedNoteCount,
       'roundedNoteCount': roundedNoteCount,
+      'middleFailedNoteCount': middleFailedNoteCount,
     };
   }
 }
@@ -103,6 +304,7 @@ class TrackPlayabilityRecommendation {
     required this.underFlowedNoteCount,
     required this.roundedNoteCount,
     required this.recommended,
+    this.middleFailedNoteCount = 0,
   });
 
   final int trackIndex;
@@ -114,6 +316,7 @@ class TrackPlayabilityRecommendation {
   final int overFlowedNoteCount;
   final int underFlowedNoteCount;
   final int roundedNoteCount;
+  final int middleFailedNoteCount;
   final bool recommended;
 
   Map<String, Object?> toJson() {
@@ -127,6 +330,7 @@ class TrackPlayabilityRecommendation {
       'overFlowedNoteCount': overFlowedNoteCount,
       'underFlowedNoteCount': underFlowedNoteCount,
       'roundedNoteCount': roundedNoteCount,
+      'middleFailedNoteCount': middleFailedNoteCount,
       'recommended': recommended,
     };
   }
@@ -195,6 +399,12 @@ class ScoreAnalysis {
           type: 'legalizeTargetNoteRange',
           config: <String, Object?>{
             'supportedPitches': supported,
+            'wrapPitchRange': <int>[
+              target.nominalPlayablePitchRange.min,
+              target.nominalPlayablePitchRange.max,
+            ],
+            'mappingSemanticsVersion': variantMappingSemanticsVersion,
+            'mappingMode': targetDerivedMappingMode,
             'semiToneRoundingMode': roundingMode.name,
             'wrapHigherOctave': 1,
             'wrapLowerOctave': 0,
@@ -221,9 +431,11 @@ class ScoreAnalysis {
         TransformStep(
           type: 'noteToKey',
           config: <String, Object?>{
-            'pitchToKeyId': target.layout.pitchToKeyId.map(
+            'pitchToKeyId': target.playablePitchToKeyId.map(
               (key, value) => MapEntry(key.toString(), value),
             ),
+            'mappingSemanticsVersion': variantMappingSemanticsVersion,
+            'mappingMode': targetDerivedMappingMode,
           },
         ),
       ]),
@@ -252,7 +464,7 @@ class ScoreAnalysis {
     SemiToneRoundingMode roundingMode = SemiToneRoundingMode.floor,
   }) {
     return <String, Object?>{
-      'version': 1,
+      'version': variantMappingSemanticsVersion,
       'target': <String, Object?>{
         'profileId': target.profile.id,
         'variantId': target.variant.id,
@@ -285,15 +497,20 @@ ScoreAnalysis analyzeScoreForTarget(
 }) {
   final merged = const MergeTracksPass(MergeTracksOptions()).run(score).score;
   final supportedPitches = target.supportedPitches;
+  final wrapPitchRange = target.nominalPlayablePitchRange;
   final pitchOffset = fixedPitchOffset == null
       ? inferBestPitchOffset(
           score: merged,
           supportedPitches: supportedPitches,
+          wrapPitchRange: wrapPitchRange,
+          wrapHigherOctave: 1,
           roundingMode: roundingMode,
         )
       : evaluateFixedPitchOffset(
           score: merged,
           supportedPitches: supportedPitches,
+          wrapPitchRange: wrapPitchRange,
+          wrapHigherOctave: 1,
           roundingMode: roundingMode,
           offset: fixedPitchOffset,
         );
@@ -305,6 +522,8 @@ ScoreAnalysis analyzeScoreForTarget(
       score: score,
       recommendedOffset: pitchOffset.bestOffset,
       supportedPitches: supportedPitches,
+      wrapPitchRange: wrapPitchRange,
+      wrapHigherOctave: 1,
       roundingMode: roundingMode,
       threshold: trackDisableThreshold,
       skipPercussionTracks: skipPercussionTracks,
@@ -317,10 +536,16 @@ PitchOffsetInference evaluateFixedPitchOffset({
   required List<int> supportedPitches,
   required SemiToneRoundingMode roundingMode,
   required int offset,
+  IntRange? wrapPitchRange,
+  int wrapHigherOctave = 0,
+  int wrapLowerOctave = 0,
 }) {
   final candidate = evaluatePitchOffset(
     score: score,
     supportedPitches: supportedPitches,
+    wrapPitchRange: wrapPitchRange,
+    wrapHigherOctave: wrapHigherOctave,
+    wrapLowerOctave: wrapLowerOctave,
     roundingMode: roundingMode,
     offset: offset,
   );
@@ -337,6 +562,9 @@ TrackSelectionAnalysis? analyzeTrackSelection({
   required List<int> supportedPitches,
   required SemiToneRoundingMode roundingMode,
   required double threshold,
+  IntRange? wrapPitchRange,
+  int wrapHigherOctave = 0,
+  int wrapLowerOctave = 0,
   bool skipPercussionTracks = true,
 }) {
   if (score.tracks.length <= 1) {
@@ -355,6 +583,7 @@ TrackSelectionAnalysis? analyzeTrackSelection({
           int underFlowedNoteCount,
           int roundedNoteCount,
           bool isPercussion,
+          int middleFailedNoteCount,
         })
       >[];
 
@@ -372,6 +601,9 @@ TrackSelectionAnalysis? analyzeTrackSelection({
     final legalized = LegalizeTargetNoteRangePass(
       LegalizeTargetNoteRangeOptions(
         supportedPitches: supportedPitches,
+        wrapPitchRange: wrapPitchRange,
+        wrapHigherOctave: wrapHigherOctave,
+        wrapLowerOctave: wrapLowerOctave,
         semiToneRoundingMode: roundingMode,
       ),
     ).run(shifted.score);
@@ -379,8 +611,9 @@ TrackSelectionAnalysis? analyzeTrackSelection({
     final overflow = (stat.values['overFlowedNoteCount'] as int?) ?? 0;
     final underflow = (stat.values['underFlowedNoteCount'] as int?) ?? 0;
     final rounded = (stat.values['roundedNoteCount'] as int?) ?? 0;
+    final middleFailed = (stat.values['middleFailedNoteCount'] as int?) ?? 0;
     final noteCount = track.notes.length;
-    final playableNoteCount = noteCount - overflow - underflow;
+    final playableNoteCount = noteCount - overflow - underflow - middleFailed;
     final playableRatio = noteCount == 0 ? 0.0 : playableNoteCount / noteCount;
     ranked.add((
       trackIndex: trackIndex,
@@ -391,6 +624,7 @@ TrackSelectionAnalysis? analyzeTrackSelection({
       overFlowedNoteCount: overflow,
       underFlowedNoteCount: underflow,
       roundedNoteCount: rounded,
+      middleFailedNoteCount: middleFailed,
       isPercussion: track.channel == 9,
     ));
   }
@@ -438,6 +672,7 @@ TrackSelectionAnalysis? analyzeTrackSelection({
                 overFlowedNoteCount: entry.overFlowedNoteCount,
                 underFlowedNoteCount: entry.underFlowedNoteCount,
                 roundedNoteCount: entry.roundedNoteCount,
+                middleFailedNoteCount: entry.middleFailedNoteCount,
                 recommended: recommendedSet.contains(entry.trackIndex),
               ),
             )
@@ -449,6 +684,9 @@ PitchOffsetInference inferBestPitchOffset({
   required Score score,
   required List<int> supportedPitches,
   required SemiToneRoundingMode roundingMode,
+  IntRange? wrapPitchRange,
+  int wrapHigherOctave = 0,
+  int wrapLowerOctave = 0,
 }) {
   const majorOffsets = <int>[0, -1, 1, -2, 2];
   const minorOffsets = <int>[0, 1, -1, 2, -2, 3, -3, 4, -4, 5, 6, 7];
@@ -467,6 +705,9 @@ PitchOffsetInference inferBestPitchOffset({
     final candidate = evaluatePitchOffset(
       score: score,
       supportedPitches: supportedPitches,
+      wrapPitchRange: wrapPitchRange,
+      wrapHigherOctave: wrapHigherOctave,
+      wrapLowerOctave: wrapLowerOctave,
       roundingMode: roundingMode,
       offset: major * 12,
     );
@@ -477,16 +718,32 @@ PitchOffsetInference inferBestPitchOffset({
     }
   }
 
+  var bestMiddleFailed = 1 << 30;
   var bestRounded = 1 << 30;
   for (final minor in minorOffsets) {
     final candidate = evaluatePitchOffset(
       score: score,
       supportedPitches: supportedPitches,
+      wrapPitchRange: wrapPitchRange,
+      wrapHigherOctave: wrapHigherOctave,
+      wrapLowerOctave: wrapLowerOctave,
       roundingMode: roundingMode,
       offset: bestMajor * 12 + minor,
     );
     candidates.add(candidate);
-    if (isSignificantlyBetter(bestRounded, candidate.roundedNoteCount)) {
+    // Preserve the legacy minor-offset tie-breaking when every pitch can be
+    // legalized. Sparse effective maps add one new priority: avoid a pitch
+    // that cannot be legalized at all before minimizing successful rounding.
+    final hasBetterMiddleFailures = isSignificantlyBetter(
+      bestMiddleFailed,
+      candidate.middleFailedNoteCount,
+    );
+    final hasSameMiddleFailures =
+        bestMiddleFailed == candidate.middleFailedNoteCount;
+    if (hasBetterMiddleFailures ||
+        (hasSameMiddleFailures &&
+            isSignificantlyBetter(bestRounded, candidate.roundedNoteCount))) {
+      bestMiddleFailed = candidate.middleFailedNoteCount;
       bestRounded = candidate.roundedNoteCount;
       bestMinor = minor;
     }
@@ -498,6 +755,9 @@ PitchOffsetInference inferBestPitchOffset({
     final candidate = evaluatePitchOffset(
       score: score,
       supportedPitches: supportedPitches,
+      wrapPitchRange: wrapPitchRange,
+      wrapHigherOctave: wrapHigherOctave,
+      wrapLowerOctave: wrapLowerOctave,
       roundingMode: roundingMode,
       offset: major * 12 + bestMinor,
     );
@@ -512,6 +772,9 @@ PitchOffsetInference inferBestPitchOffset({
   bestCandidate ??= evaluatePitchOffset(
     score: score,
     supportedPitches: supportedPitches,
+    wrapPitchRange: wrapPitchRange,
+    wrapHigherOctave: wrapHigherOctave,
+    wrapLowerOctave: wrapLowerOctave,
     roundingMode: roundingMode,
     offset: bestMajor * 12 + bestMinor,
   );
@@ -528,6 +791,9 @@ PitchOffsetCandidate evaluatePitchOffset({
   required List<int> supportedPitches,
   required SemiToneRoundingMode roundingMode,
   required int offset,
+  IntRange? wrapPitchRange,
+  int wrapHigherOctave = 0,
+  int wrapLowerOctave = 0,
 }) {
   const overFlowWeight = 5;
   final shifted = PitchOffsetPass(
@@ -536,6 +802,9 @@ PitchOffsetCandidate evaluatePitchOffset({
   final legalized = LegalizeTargetNoteRangePass(
     LegalizeTargetNoteRangeOptions(
       supportedPitches: supportedPitches,
+      wrapPitchRange: wrapPitchRange,
+      wrapHigherOctave: wrapHigherOctave,
+      wrapLowerOctave: wrapLowerOctave,
       semiToneRoundingMode: roundingMode,
     ),
   ).run(shifted.score);
@@ -543,11 +812,13 @@ PitchOffsetCandidate evaluatePitchOffset({
   final overflow = (stat.values['overFlowedNoteCount'] as int?) ?? 0;
   final underflow = (stat.values['underFlowedNoteCount'] as int?) ?? 0;
   final rounded = (stat.values['roundedNoteCount'] as int?) ?? 0;
+  final middleFailed = (stat.values['middleFailedNoteCount'] as int?) ?? 0;
   return PitchOffsetCandidate(
     offset: offset,
-    outRangedWeight: overflow * overFlowWeight + underflow,
+    outRangedWeight: overflow * overFlowWeight + underflow + middleFailed,
     overFlowedNoteCount: overflow,
     underFlowedNoteCount: underflow,
     roundedNoteCount: rounded,
+    middleFailedNoteCount: middleFailed,
   );
 }

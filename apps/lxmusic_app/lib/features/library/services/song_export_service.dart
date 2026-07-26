@@ -112,6 +112,7 @@ class SongExportService {
             profile: profile,
             layout: layout,
             variant: variant,
+            customPitchToKeyId: resolveCustomPitchToKeyId(config.steps),
           ),
         );
         final calibration = calibrationRepository.load(

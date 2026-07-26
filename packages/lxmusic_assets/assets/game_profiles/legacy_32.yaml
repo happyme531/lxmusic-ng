@@ -3,7 +3,7 @@
   "displayName": "自定义2",
   "packageNameHints": [],
   "defaultLayoutId": "generic_3x7",
-  "sameKeyMinIntervalMs": 20,
+  "sameKeyMinIntervalMs": 0,
   "featureFlags": [],
   "layouts": [
     {

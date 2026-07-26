@@ -50,7 +50,56 @@ class InstrumentVariant {
   final NoteDurationMode noteDurationMode;
   final int? sameKeyMinIntervalOverrideMs;
 
-  int mapPitch(int pitch) => replacePitchMap[pitch] ?? pitch;
+  /// Returns the pitch actually produced by a physical layout key.
+  ///
+  /// [replacePitchMap] is keyed by the base pitch declared by the layout. It
+  /// does not rewrite an incoming score pitch.
+  int effectivePitchForLayoutPitch(int layoutPitch) {
+    return replacePitchMap[layoutPitch] ?? layoutPitch;
+  }
+
+  /// Backwards-compatible alias for [effectivePitchForLayoutPitch].
+  int mapPitch(int pitch) => effectivePitchForLayoutPitch(pitch);
+
+  /// Builds the playable-pitch to physical-key map for [layout].
+  Map<int, String> playablePitchToKeyId(KeyLayout layout) {
+    final result = <int, String>{};
+    final layoutPitches = layout.pitchToKeyId.keys.toList()..sort();
+    for (final layoutPitch in layoutPitches) {
+      final effectivePitch = effectivePitchForLayoutPitch(layoutPitch);
+      if (!supportsPitch(effectivePitch)) {
+        continue;
+      }
+      if (result.containsKey(effectivePitch)) {
+        throw StateError(
+          'Variant $id maps multiple keys in layout ${layout.id} to pitch '
+          '$effectivePitch.',
+        );
+      }
+      result[effectivePitch] = layout.pitchToKeyId[layoutPitch]!;
+    }
+    return Map<int, String>.unmodifiable(result);
+  }
+
+  /// Returns the base layout pitches whose physical keys are available to
+  /// this variant.
+  ///
+  /// These pitches describe the physical keyboard bounds used for octave
+  /// wrapping. They can differ from the effective pitches produced by those
+  /// keys when [replacePitchMap] is non-empty.
+  List<int> playableLayoutPitches(KeyLayout layout) {
+    final playablePitchToKey = playablePitchToKeyId(layout);
+    final result = <int>[];
+    final layoutPitches = layout.pitchToKeyId.keys.toList()..sort();
+    for (final layoutPitch in layoutPitches) {
+      final effectivePitch = effectivePitchForLayoutPitch(layoutPitch);
+      if (playablePitchToKey[effectivePitch] ==
+          layout.pitchToKeyId[layoutPitch]) {
+        result.add(layoutPitch);
+      }
+    }
+    return List<int>.unmodifiable(result);
+  }
 
   bool supportsPitch(int pitch) {
     if (availablePitchRange == null) {

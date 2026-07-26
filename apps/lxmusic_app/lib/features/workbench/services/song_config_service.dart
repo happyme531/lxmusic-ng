@@ -171,6 +171,18 @@ class SongConfigService {
       layout: layout,
     );
     if (existing != null) {
+      final refreshed = refreshTargetMappingSteps(
+        steps: existing.steps,
+        target: AnalysisTarget(
+          profile: profile,
+          variant: variant,
+          layout: layout,
+        ),
+      );
+      if (refreshed.changed) {
+        existing.steps = refreshed.steps;
+        await save(existing);
+      }
       return existing;
     }
 

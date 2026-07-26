@@ -162,6 +162,32 @@ void main() {
       expect(result.report.stats.single.values['wrappedLowerNoteCount'], 1);
     });
 
+    test('uses nominal bounds before wrapping retuned edge pitches', () {
+      const score = Score(
+        format: SourceFormat.jsonScore,
+        tracks: <Track>[
+          Track(
+            name: 'A',
+            channel: 0,
+            notes: <NoteEvent>[NoteEvent(pitch: 83, startMs: 0)],
+          ),
+        ],
+      );
+
+      final result = const LegalizeTargetNoteRangePass(
+        LegalizeTargetNoteRangeOptions(
+          supportedPitches: <int>[70, 82],
+          semiToneRoundingMode: SemiToneRoundingMode.floor,
+          wrapHigherOctave: 1,
+          wrapPitchRange: IntRange(48, 83),
+        ),
+      ).run(score);
+
+      expect(result.score.tracks.first.notes.single.pitch, 82);
+      expect(result.report.stats.single.values['roundedNoteCount'], 1);
+      expect(result.report.stats.single.values['wrappedHigherNoteCount'], 0);
+    });
+
     test('duplicates semitones in both mode and drops impossible notes', () {
       const score = Score(
         format: SourceFormat.jsonScore,

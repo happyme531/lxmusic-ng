@@ -297,7 +297,7 @@ void main() {
         ),
         TransformStep(
           type: 'pitchOffset',
-          config: <String, Object?>{'offset': 12},
+          config: <String, Object?>{'offset': 2},
         ),
       ],
     );
@@ -366,7 +366,7 @@ const _dynamicTrackScoreJson = '''
     {
       "name": "NeedsPositiveOffset",
       "channel": 1,
-      "notes": [{"pitch": 48, "startMs": 0, "velocity": 100}]
+      "notes": [{"pitch": 58, "startMs": 0, "velocity": 100}]
     }
   ]
 }

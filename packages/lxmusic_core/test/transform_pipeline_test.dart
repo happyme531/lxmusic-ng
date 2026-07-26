@@ -72,6 +72,37 @@ void main() {
     expect(summary.pipelineNotesRemoved, 0);
   });
 
+  test('decodes nominal wrapPitchRange from pipeline config', () {
+    const score = Score(
+      format: SourceFormat.jsonScore,
+      tracks: <Track>[
+        Track(
+          name: 'A',
+          channel: 0,
+          notes: <NoteEvent>[NoteEvent(pitch: 83, startMs: 0)],
+        ),
+      ],
+    );
+
+    const pipeline = TransformPipeline(<TransformStep>[
+      TransformStep(
+        type: 'legalizeTargetNoteRange',
+        config: <String, Object?>{
+          'supportedPitches': <int>[70, 82],
+          'semiToneRoundingMode': 'floor',
+          'wrapHigherOctave': 1,
+          'wrapPitchRange': <int>[48, 83],
+        },
+      ),
+    ]);
+
+    final result = pipeline.run(score);
+
+    expect(result.score.tracks.first.notes.single.pitch, 82);
+    expect(result.report.stats.single.values['roundedNoteCount'], 1);
+    expect(result.report.stats.single.values['wrappedHigherNoteCount'], 0);
+  });
+
   test('runs noteToKey from pipeline config', () {
     const score = Score(
       format: SourceFormat.jsonScore,

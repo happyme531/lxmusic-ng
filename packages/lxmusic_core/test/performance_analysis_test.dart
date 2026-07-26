@@ -392,12 +392,12 @@ void main() {
         Track(
           name: 'NeedsNoOffset',
           channel: 0,
-          notes: <NoteEvent>[NoteEvent(pitch: 60, startMs: 0)],
+          notes: <NoteEvent>[NoteEvent(pitch: 64, startMs: 0)],
         ),
         Track(
           name: 'NeedsPositiveOffset',
           channel: 1,
-          notes: <NoteEvent>[NoteEvent(pitch: 48, startMs: 0)],
+          notes: <NoteEvent>[NoteEvent(pitch: 58, startMs: 0)],
         ),
       ],
     );
@@ -409,11 +409,11 @@ void main() {
         variant: profile.variants.first,
         layout: layout,
       ),
-      fixedPitchOffset: 12,
+      fixedPitchOffset: 2,
     );
 
-    expect(analysis.pitchOffset.bestOffset, 12);
-    expect(analysis.pitchOffset.bestCandidate.offset, 12);
+    expect(analysis.pitchOffset.bestOffset, 2);
+    expect(analysis.pitchOffset.bestCandidate.offset, 2);
     expect(analysis.pitchOffset.candidates, hasLength(1));
     expect(analysis.trackSelection!.recommendedTrackIndexes, <int>[1]);
     expect(

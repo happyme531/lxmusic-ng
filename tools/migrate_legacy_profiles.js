@@ -35,7 +35,8 @@ function main() {
       displayName: config.gameName,
       packageNameHints: config.packageNamePart || [],
       defaultLayoutId: config.keyTypes[0]?.name || null,
-      sameKeyMinIntervalMs: config.sameKeyMinInterval || 20,
+      // Zero is a valid legacy value meaning "unlimited".
+      sameKeyMinIntervalMs: config.sameKeyMinInterval ?? 20,
       featureFlags: [],
       layouts: config.keyTypes.map((item, index) => ({
         layoutId: item.name,

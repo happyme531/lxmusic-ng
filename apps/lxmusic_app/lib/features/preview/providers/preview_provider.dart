@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:lxmusic_core/lxmusic_core.dart';
 
@@ -26,9 +27,15 @@ final previewSessionProvider = FutureProvider<PreviewSessionData?>((ref) async {
   final songConfigService = ref.watch(songConfigServiceProvider);
   final rawScore = await songConfigService.parseFile(file);
   final transformed = TransformPipeline(config.steps).run(rawScore);
+  final customPitchToKeyId = resolveCustomPitchToKeyId(config.steps);
   final semanticPlan = const PerformancePlanner().plan(
     transformed.score,
-    PlanningContext(profile: profile, layout: layout, variant: variant),
+    PlanningContext(
+      profile: profile,
+      layout: layout,
+      variant: variant,
+      customPitchToKeyId: customPitchToKeyId,
+    ),
   );
 
   return PreviewSessionData(
@@ -50,35 +57,62 @@ final previewGeometryProvider =
 
 final previewLaneNotesProvider =
     Provider.family<List<PreviewLaneNote>, PreviewSessionData>((ref, session) {
-      final notes = <PreviewLaneNote>[];
-      for (final track in session.transformedScore.tracks) {
-        for (final note in track.notes) {
-          final mappedPitch =
-              (note.attrs['mappedPitch'] as int?) ??
-              session.variant.mapPitch(note.pitch);
-          final keyId =
-              note.attrs['keyId'] as String? ??
-              session.layout.keyIdForPitch(mappedPitch);
-          if (keyId == null) {
-            continue;
-          }
-          final rawDuration = note.durationMs ?? 0;
-          final effectiveDuration = rawDuration <= 0
-              ? _previewFallbackPointDurationMs
-              : rawDuration;
-          notes.add(
-            PreviewLaneNote(
-              keyId: keyId,
-              pitch: mappedPitch,
-              startMs: note.startMs,
-              durationMs: effectiveDuration,
-              velocity: note.velocity,
-              isPoint:
-                  rawDuration <= 0 || rawDuration <= _previewPointThresholdMs,
-            ),
-          );
-        }
-      }
-      notes.sort((a, b) => a.startMs.compareTo(b.startMs));
-      return notes;
+      return buildPreviewLaneNotes(
+        score: session.transformedScore,
+        variant: session.variant,
+        layout: session.layout,
+        customPitchToKeyId: resolveCustomPitchToKeyId(session.config.steps),
+      );
     });
+
+@visibleForTesting
+List<PreviewLaneNote> buildPreviewLaneNotes({
+  required Score score,
+  required InstrumentVariant variant,
+  required KeyLayout layout,
+  Map<int, String>? customPitchToKeyId,
+}) {
+  final playablePitchToKeyId = variant.playablePitchToKeyId(layout);
+  final nominalPitchByKeyId = <String, int>{};
+  final orderedLayoutPitches = layout.pitchToKeyId.keys.toList()..sort();
+  for (final pitch in orderedLayoutPitches) {
+    nominalPitchByKeyId.putIfAbsent(layout.pitchToKeyId[pitch]!, () => pitch);
+  }
+  for (final key in layout.keys) {
+    if (key.pitch != null) {
+      nominalPitchByKeyId[key.id] = key.pitch!;
+    }
+  }
+  final playableKeyIds = playablePitchToKeyId.values.toSet();
+  final notes = <PreviewLaneNote>[];
+  for (final track in score.tracks) {
+    for (final note in track.notes) {
+      final keyId = customPitchToKeyId == null
+          ? playablePitchToKeyId[note.pitch]
+          : customPitchToKeyId[note.pitch];
+      if (keyId == null || !playableKeyIds.contains(keyId)) {
+        continue;
+      }
+      final nominalPitch = nominalPitchByKeyId[keyId];
+      final previewPitch = nominalPitch == null
+          ? note.pitch
+          : variant.effectivePitchForLayoutPitch(nominalPitch);
+      final rawDuration = note.durationMs ?? 0;
+      final effectiveDuration = rawDuration <= 0
+          ? _previewFallbackPointDurationMs
+          : rawDuration;
+      notes.add(
+        PreviewLaneNote(
+          keyId: keyId,
+          pitch: previewPitch,
+          startMs: note.startMs,
+          durationMs: effectiveDuration,
+          velocity: note.velocity,
+          isPoint: rawDuration <= 0 || rawDuration <= _previewPointThresholdMs,
+        ),
+      );
+    }
+  }
+  notes.sort((a, b) => a.startMs.compareTo(b.startMs));
+  return notes;
+}
