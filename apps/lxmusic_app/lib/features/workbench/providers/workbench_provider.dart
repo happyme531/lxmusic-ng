@@ -13,8 +13,7 @@ import '../services/song_config_service.dart';
 // Selected file
 // ---------------------------------------------------------------------------
 
-final selectedFileProvider =
-    NotifierProvider<SelectedFileNotifier, MusicFile?>(
+final selectedFileProvider = NotifierProvider<SelectedFileNotifier, MusicFile?>(
   SelectedFileNotifier.new,
 );
 
@@ -62,14 +61,14 @@ final initialPersistedProfileUsageProvider = Provider<PersistedProfileUsage>((
 
 final persistedProfileUsageProvider =
     NotifierProvider<PersistedProfileUsageNotifier, PersistedProfileUsage>(
-  PersistedProfileUsageNotifier.new,
-);
+      PersistedProfileUsageNotifier.new,
+    );
 
-final targetSelectionPersistenceProvider = Provider<TargetSelectionPersistence>((
-  ref,
-) {
-  return const TargetSelectionPersistence();
-});
+final targetSelectionPersistenceProvider = Provider<TargetSelectionPersistence>(
+  (ref) {
+    return const TargetSelectionPersistence();
+  },
+);
 
 class PersistedProfileUsageNotifier extends Notifier<PersistedProfileUsage> {
   @override
@@ -78,19 +77,17 @@ class PersistedProfileUsageNotifier extends Notifier<PersistedProfileUsage> {
   }
 
   void markUsed(String profileId, int timestamp) {
-    state = PersistedProfileUsage(
-      <String, int>{
-        ...state.lastUsedAtByProfileId,
-        profileId: timestamp,
-      },
-    );
+    state = PersistedProfileUsage(<String, int>{
+      ...state.lastUsedAtByProfileId,
+      profileId: timestamp,
+    });
   }
 }
 
 final selectedProfileProvider =
     NotifierProvider<SelectedProfileNotifier, GameProfile?>(
-  SelectedProfileNotifier.new,
-);
+      SelectedProfileNotifier.new,
+    );
 
 class SelectedProfileNotifier extends Notifier<GameProfile?> {
   @override
@@ -115,19 +112,14 @@ class SelectedProfileNotifier extends Notifier<GameProfile?> {
     state = null;
     ref.read(selectedVariantProvider.notifier).clear();
     ref.read(selectedLayoutProvider.notifier).clear();
-    _saveTargetSelection(
-      ref,
-      profileId: null,
-      variantId: null,
-      layoutId: null,
-    );
+    _saveTargetSelection(ref, profileId: null, variantId: null, layoutId: null);
   }
 }
 
 final selectedVariantProvider =
     NotifierProvider<SelectedVariantNotifier, InstrumentVariant?>(
-  SelectedVariantNotifier.new,
-);
+      SelectedVariantNotifier.new,
+    );
 
 class SelectedVariantNotifier extends Notifier<InstrumentVariant?> {
   @override
@@ -153,8 +145,8 @@ class SelectedVariantNotifier extends Notifier<InstrumentVariant?> {
 
 final selectedLayoutProvider =
     NotifierProvider<SelectedLayoutNotifier, KeyLayout?>(
-  SelectedLayoutNotifier.new,
-);
+      SelectedLayoutNotifier.new,
+    );
 
 class SelectedLayoutNotifier extends Notifier<KeyLayout?> {
   @override
@@ -195,12 +187,42 @@ final analysisProvider = FutureProvider<ScoreAnalysis?>((ref) async {
     return null;
   }
 
-  return ref.read(songConfigServiceProvider).analyzeForTarget(
-    file: file,
-    profile: profile,
-    variant: variant,
-    layout: layout,
-  );
+  return ref
+      .read(songConfigServiceProvider)
+      .analyzeForTarget(
+        file: file,
+        profile: profile,
+        variant: variant,
+        layout: layout,
+      );
+});
+
+final currentPitchAnalysisProvider = FutureProvider<ScoreAnalysis?>((
+  ref,
+) async {
+  final file = ref.watch(selectedFileProvider);
+  final profile = ref.watch(selectedProfileProvider);
+  final variant = ref.watch(selectedVariantProvider);
+  final layout = ref.watch(selectedLayoutProvider);
+  final config = await ref.watch(songConfigProvider.future);
+
+  if (file == null ||
+      profile == null ||
+      variant == null ||
+      layout == null ||
+      config == null) {
+    return null;
+  }
+
+  return ref
+      .read(songConfigServiceProvider)
+      .analyzeForTarget(
+        file: file,
+        profile: profile,
+        variant: variant,
+        layout: layout,
+        fixedPitchOffset: config.pitchOffset,
+      );
 });
 
 // ---------------------------------------------------------------------------
@@ -209,8 +231,81 @@ final analysisProvider = FutureProvider<ScoreAnalysis?>((ref) async {
 
 final songConfigProvider =
     AsyncNotifierProvider<SongConfigNotifier, SongConfig?>(
-  SongConfigNotifier.new,
-);
+      SongConfigNotifier.new,
+    );
+
+final configReportProvider = FutureProvider<ConfigReportSummary?>((ref) async {
+  final file = ref.watch(selectedFileProvider);
+  final config = await ref.watch(songConfigProvider.future);
+  if (file == null || config == null) {
+    return null;
+  }
+
+  final service = ref.watch(songConfigServiceProvider);
+  final rawScore = await service.parseFile(file);
+  final transformed = TransformPipeline(config.steps).run(rawScore);
+  return ConfigReportSummary.fromReport(transformed.report);
+});
+
+class ConfigReportSummary {
+  const ConfigReportSummary({
+    required this.inputNoteCount,
+    required this.outputNoteCount,
+    required this.pipelineNotesAdded,
+    required this.pipelineNotesRemoved,
+    required this.outOfRangeDiscarded,
+    required this.semitoneRounded,
+    required this.tooDenseDiscarded,
+    required this.chordNotesDiscarded,
+  });
+
+  final int inputNoteCount;
+  final int outputNoteCount;
+  final int pipelineNotesAdded;
+  final int pipelineNotesRemoved;
+  final int outOfRangeDiscarded;
+  final int semitoneRounded;
+  final int tooDenseDiscarded;
+  final int chordNotesDiscarded;
+
+  factory ConfigReportSummary.fromReport(TransformReport report) {
+    final summary = report.noteSummary;
+    final legalize = _firstStat(report, 'LegalizeTargetNoteRangePass');
+    final mergeNearby = _firstStat(report, 'MergeNearbyNotesPass');
+    final singleKey = _firstStat(report, 'SingleKeyFrequencyLimitPass');
+    final chord = _firstStat(report, 'ChordNoteCountLimitPass');
+    return ConfigReportSummary(
+      inputNoteCount: summary?.inputNoteCount ?? 0,
+      outputNoteCount: summary?.outputNoteCount ?? 0,
+      pipelineNotesAdded: summary?.pipelineNotesAdded ?? 0,
+      pipelineNotesRemoved: summary?.pipelineNotesRemoved ?? 0,
+      outOfRangeDiscarded:
+          _intValue(legalize, 'underFlowedNoteCount') +
+          _intValue(legalize, 'overFlowedNoteCount') +
+          _intValue(legalize, 'middleFailedNoteCount'),
+      semitoneRounded: _intValue(legalize, 'roundedNoteCount'),
+      tooDenseDiscarded:
+          _intValue(mergeNearby, 'droppedSameNoteCount') +
+          _intValue(singleKey, 'droppedNoteCount'),
+      chordNotesDiscarded:
+          _intValue(chord, 'droppedNoteCount') +
+          _intValue(chord, 'discardedNoteCount'),
+    );
+  }
+
+  static PassStat? _firstStat(TransformReport report, String name) {
+    for (final stat in report.stats) {
+      if (stat.name == name) {
+        return stat;
+      }
+    }
+    return null;
+  }
+
+  static int _intValue(PassStat? stat, String key) {
+    return (stat?.values[key] as int?) ?? 0;
+  }
+}
 
 class SongConfigNotifier extends AsyncNotifier<SongConfig?> {
   @override
@@ -224,12 +319,14 @@ class SongConfigNotifier extends AsyncNotifier<SongConfig?> {
       return null;
     }
 
-    return ref.read(songConfigServiceProvider).ensureForTarget(
-      file: file,
-      profile: profile,
-      variant: variant,
-      layout: layout,
-    );
+    return ref
+        .read(songConfigServiceProvider)
+        .ensureForTarget(
+          file: file,
+          profile: profile,
+          variant: variant,
+          layout: layout,
+        );
   }
 
   /// Mutate config and persist.
@@ -272,12 +369,14 @@ class SongConfigNotifier extends AsyncNotifier<SongConfig?> {
     if (file == null || profile == null || variant == null || layout == null) {
       return;
     }
-    await ref.read(songConfigServiceProvider).clearForTarget(
-      file: file,
-      profile: profile,
-      variant: variant,
-      layout: layout,
-    );
+    await ref
+        .read(songConfigServiceProvider)
+        .clearForTarget(
+          file: file,
+          profile: profile,
+          variant: variant,
+          layout: layout,
+        );
     // Trigger rebuild
     ref.invalidateSelf();
   }
@@ -387,11 +486,9 @@ void _saveTargetSelection(
   required String? layoutId,
 }) {
   unawaited(
-    ref.read(targetSelectionPersistenceProvider).save(
-      profileId: profileId,
-      variantId: variantId,
-      layoutId: layoutId,
-    ),
+    ref
+        .read(targetSelectionPersistenceProvider)
+        .save(profileId: profileId, variantId: variantId, layoutId: layoutId),
   );
 }
 
@@ -415,13 +512,11 @@ void _saveLayoutId(Ref ref, String? layoutId) {
 
 void markProfileUsedNow(WidgetRef ref, String profileId) {
   unawaited(() async {
-    final timestamp =
-        await ref.read(targetSelectionPersistenceProvider).markProfileUsedNow(
-              profileId,
-            );
-    ref.read(persistedProfileUsageProvider.notifier).markUsed(
-          profileId,
-          timestamp,
-        );
+    final timestamp = await ref
+        .read(targetSelectionPersistenceProvider)
+        .markProfileUsedNow(profileId);
+    ref
+        .read(persistedProfileUsageProvider.notifier)
+        .markUsed(profileId, timestamp);
   }());
 }

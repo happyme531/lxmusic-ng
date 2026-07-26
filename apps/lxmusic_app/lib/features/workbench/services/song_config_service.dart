@@ -128,6 +128,7 @@ class SongConfigService {
     required GameProfile profile,
     required InstrumentVariant variant,
     required KeyLayout layout,
+    int? fixedPitchOffset,
   }) async {
     final score = await parseFile(file);
     return analyzeScoreForTarget(
@@ -137,6 +138,7 @@ class SongConfigService {
         variant: variant,
         layout: layout,
       ),
+      fixedPitchOffset: fixedPitchOffset,
     );
   }
 

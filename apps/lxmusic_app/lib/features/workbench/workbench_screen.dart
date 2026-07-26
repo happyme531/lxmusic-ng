@@ -4,11 +4,9 @@ import 'package:go_router/go_router.dart';
 
 import '../library/models/music_file.dart';
 import 'providers/workbench_provider.dart';
-import 'widgets/analysis_card.dart';
 import 'widgets/config_editor_card.dart';
 import 'widgets/current_target_action.dart';
 import 'widgets/file_selection_card.dart';
-import 'widgets/target_selection_card.dart';
 
 class WorkbenchScreen extends ConsumerStatefulWidget {
   const WorkbenchScreen({super.key, this.initialFile});
@@ -76,25 +74,13 @@ class _WorkbenchScreenState extends ConsumerState<WorkbenchScreen> {
           ),
           const SizedBox(height: 12),
 
-          // 2. Target selection (only if file is selected)
-          if (selectedFile != null) ...[
-            const TargetSelectionCard(),
-            const SizedBox(height: 12),
-          ],
-
-          // 3. Analysis summary
-          if (selectedFile != null) ...[
-            const AnalysisCard(),
-            const SizedBox(height: 12),
-          ],
-
-          // 4. Config editor (only when config exists)
+          // 2. Config editor (only when config exists)
           if (songConfigAsync.value != null) ...[
             ConfigEditorCard(config: songConfigAsync.value!),
             const SizedBox(height: 24),
           ],
 
-          // 5. Launch button
+          // 3. Launch button
           if (songConfigAsync.value != null)
             Row(
               children: [

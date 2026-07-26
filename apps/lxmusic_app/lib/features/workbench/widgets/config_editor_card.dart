@@ -20,13 +20,13 @@ class _ConfigEditorCardState extends ConsumerState<ConfigEditorCard> {
   @override
   void initState() {
     super.initState();
-    _level = widget.config.configLevel;
+    _level = _normalizeLevel(widget.config.configLevel);
   }
 
   @override
   void didUpdateWidget(ConfigEditorCard oldWidget) {
     super.didUpdateWidget(oldWidget);
-    _level = widget.config.configLevel;
+    _level = _normalizeLevel(widget.config.configLevel);
   }
 
   void _mutate(void Function(SongConfig c) fn) {
@@ -37,6 +37,8 @@ class _ConfigEditorCardState extends ConsumerState<ConfigEditorCard> {
   Widget build(BuildContext context) {
     final config = widget.config;
     final scheme = Theme.of(context).colorScheme;
+    final reportAsync = ref.watch(configReportProvider);
+    final currentPitchAnalysisAsync = ref.watch(currentPitchAnalysisProvider);
 
     return Card(
       child: Padding(
@@ -44,7 +46,6 @@ class _ConfigEditorCardState extends ConsumerState<ConfigEditorCard> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Header
             Row(
               children: [
                 Icon(Icons.tune, color: scheme.primary),
@@ -52,19 +53,16 @@ class _ConfigEditorCardState extends ConsumerState<ConfigEditorCard> {
                 Text(
                   '转换配置',
                   style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.w600,
-                      ),
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
               ],
             ),
             const SizedBox(height: 16),
-
-            // Level selector
             SegmentedButton<ConfigLevel>(
               segments: const [
                 ButtonSegment(value: ConfigLevel.simple, label: Text('简单')),
                 ButtonSegment(value: ConfigLevel.advanced, label: Text('高级')),
-                ButtonSegment(value: ConfigLevel.expert, label: Text('专家')),
               ],
               selected: {_level},
               onSelectionChanged: (selection) {
@@ -72,288 +70,698 @@ class _ConfigEditorCardState extends ConsumerState<ConfigEditorCard> {
                 _mutate((c) => c.configLevel = selection.first);
               },
             ),
-            const SizedBox(height: 16),
-
-            // Simple level params (always shown)
-            ..._buildSimpleParams(config),
-
-            // Advanced level params
-            if (_level == ConfigLevel.advanced ||
-                _level == ConfigLevel.expert) ...[
+            const SizedBox(height: 18),
+            ..._buildOptions(config, currentPitchAnalysisAsync),
+            if (_level == ConfigLevel.advanced) ...[
               const Divider(height: 32),
-              ..._buildAdvancedParams(config),
+              _ExpertPipelineView(steps: config.steps),
             ],
-
-            // Expert level params
-            if (_level == ConfigLevel.expert) ...[
-              const Divider(height: 32),
-              ..._buildExpertParams(config),
-            ],
+            const Divider(height: 32),
+            _SectionHeader(
+              icon: Icons.insights_outlined,
+              title: '转换摘要',
+              subtitle: '用当前配置实际运行 transform 后的结果',
+            ),
+            const SizedBox(height: 10),
+            _ReportSummary(reportAsync: reportAsync, config: config),
           ],
         ),
       ),
     );
   }
 
-  // -------------------------------------------------------------------------
-  // Simple: 5 params
-  // -------------------------------------------------------------------------
+  ConfigLevel _normalizeLevel(ConfigLevel level) {
+    return level == ConfigLevel.expert ? ConfigLevel.advanced : level;
+  }
 
-  List<Widget> _buildSimpleParams(SongConfig config) {
+  List<Widget> _buildOptions(
+    SongConfig config,
+    AsyncValue<ScoreAnalysis?> analysisAsync,
+  ) {
+    final trackSelection = analysisAsync.value?.trackSelection;
     return [
-      // Speed
-      _SliderRow(
-        label: '速度',
-        value: config.speed,
-        min: 0.25,
-        max: 3.0,
-        divisions: 11,
-        format: (v) => '${v.toStringAsFixed(2)}x',
-        onChanged: (v) => _mutate((c) => c.speed = v),
-      ),
-      const SizedBox(height: 8),
-
-      // Pitch offset
-      _StepperRow(
-        label: '移调',
-        value: config.pitchOffset,
-        min: -24,
-        max: 24,
-        format: (v) {
-          if (v == 0) return '0';
-          return v > 0 ? '+$v' : '$v';
-        },
-        suffix: '半音',
-        recommendedValue: config.recommendedPitchOffset,
-        onChanged: (v) => _mutate((c) => c.pitchOffset = v),
-      ),
-      const SizedBox(height: 8),
-
-      // Skip percussion
+      if (_level == ConfigLevel.advanced) ...[
+        _SliderRow(
+          label: '速度',
+          value: config.speed,
+          min: 0.25,
+          max: 3.0,
+          divisions: 11,
+          format: (v) => '${v.toStringAsFixed(2)}x',
+          onChanged: (v) => _mutate((c) => c.speed = v),
+        ),
+        const SizedBox(height: 8),
+        _StepperRow(
+          label: '八度',
+          value: config.pitchOctaveOffset,
+          min: -2,
+          max: 2,
+          format: _formatOffset,
+          suffix: '个',
+          recommendedValue: config.recommendedPitchOctaveOffset,
+          onChanged: (v) => _mutate((c) => c.pitchOctaveOffset = v),
+        ),
+        _StepperRow(
+          label: '半音',
+          value: config.pitchSemitoneOffset,
+          min: -11,
+          max: 11,
+          format: _formatOffset,
+          suffix: '个',
+          recommendedValue: config.recommendedPitchSemitoneOffset,
+          onChanged: (v) => _mutate((c) => c.pitchSemitoneOffset = v),
+        ),
+      ] else ...[
+        _FixOption<int>(
+          title: '八度',
+          value: config.simplePitchOctaveShift,
+          options: const {-1: '降低一个', 0: '不变', 1: '升高一个'},
+          onChanged: (value) =>
+              _mutate((c) => c.simplePitchOctaveShift = value),
+        ),
+      ],
       SwitchListTile(
         contentPadding: EdgeInsets.zero,
-        title: const Text('跳过打击乐'),
-        value: config.skipPercussion,
-        onChanged: (v) => _mutate((c) => c.skipPercussion = v),
+        title: const Text('跳过空白'),
+        value: config.skipBlank,
+        onChanged: (value) => _mutate((c) => c.skipBlank = value),
       ),
-
-      // Humanify
+      if (trackSelection != null) ...[
+        _TrackSelectionEditor(
+          selection: trackSelection,
+          selectedTrackIndexes: config.selectedTrackIndexes,
+          onChanged: (value) => _mutate((c) => c.selectedTrackIndexes = value),
+        ),
+        const SizedBox(height: 8),
+      ],
+      _FixOption<int?>(
+        title: '多指模式',
+        value: config.chordMaxNoteCount,
+        options: const {null: '不限', 3: '3', 2: '2', 1: '1'},
+        onChanged: (value) => _mutate((c) => c.chordMaxNoteCount = value),
+      ),
+      _FixOption<int>(
+        title: '同键间隔',
+        value: config.sameKeyMinIntervalMs,
+        options: const {20: '默认', 35: '稍松', 50: '更稳'},
+        onChanged: (value) => _mutate((c) => c.sameKeyMinIntervalMs = value),
+      ),
+      if (_level == ConfigLevel.advanced)
+        _ClickLimitSlider(
+          value: config.clickLimitPerSecond,
+          onChanged: (value) => _mutate((c) => c.clickLimitPerSecond = value),
+        )
+      else
+        _FixOption<int?>(
+          title: '限制点击速度',
+          value: _simpleClickLimitValue(config.clickLimitPerSecond),
+          options: const {
+            null: '不限',
+            5: '每秒 5 个',
+            3: '每秒 3 个',
+            2: '每秒 2 个',
+            1: '每秒 1 个',
+          },
+          onChanged: (value) =>
+              _mutate((c) => c.clickLimitPerSecond = value?.toDouble()),
+        ),
       _SliderRow(
         label: '人性化',
         value: config.humanifyStrength ?? 0,
         min: 0,
         max: 30,
         divisions: 6,
-        format: (v) {
-          if (v == 0) return '关';
-          if (v <= 5) return '轻';
-          if (v <= 15) return '中';
-          return '强';
-        },
+        format: _formatHumanify,
         onChanged: (v) =>
             _mutate((c) => c.humanifyStrength = v == 0 ? null : v),
       ),
-    ];
-  }
-
-  // -------------------------------------------------------------------------
-  // Advanced: ~8 more params
-  // -------------------------------------------------------------------------
-
-  List<Widget> _buildAdvancedParams(SongConfig config) {
-    return [
-      Text(
-        '高级参数',
-        style: Theme.of(context).textTheme.titleSmall?.copyWith(
-              color: Theme.of(context).colorScheme.primary,
-            ),
-      ),
-      const SizedBox(height: 12),
-
-      // Semi-tone rounding mode
-      _DropdownRow<String>(
-        label: '半音取整模式',
-        value: config.semiToneRoundingMode,
-        items: const {
-          'floor': '向下取整',
-          'ceil': '向上取整',
-          'drop': '丢弃',
-          'both': '双向',
-          'alternating': '交替',
-          'none': '不处理',
-        },
-        onChanged: (v) => _mutate((c) => c.semiToneRoundingMode = v),
-      ),
-      const SizedBox(height: 8),
-
-      // Same-key minimum interval
-      _StepperRow(
-        label: '同键最小间隔',
-        value: config.sameKeyMinIntervalMs,
-        min: 5,
-        max: 200,
-        step: 5,
-        format: (v) => '$v',
-        suffix: 'ms',
-        onChanged: (v) => _mutate((c) => c.sameKeyMinIntervalMs = v),
-      ),
-      const SizedBox(height: 8),
-
-      // Chord note count limit
-      _NullableStepperRow(
-        label: '和弦最大音符数',
-        value: config.chordMaxNoteCount,
-        min: 1,
-        max: 20,
-        format: (v) => v == null ? '不限' : '$v',
-        onChanged: (v) => _mutate((c) => c.chordMaxNoteCount = v),
-      ),
-      const SizedBox(height: 8),
-
-      // Optional steps toggles
-      _OptionalStepToggle(
-        label: '跳过前奏',
-        stepType: 'skipIntro',
-        config: config,
-        defaultConfig: const {'maxIntroMs': 2000},
-        onToggle: (enabled) {
-          _mutate((c) {
-            if (enabled) {
-              c.steps.add(const TransformStep(
-                type: 'skipIntro',
-                config: {'maxIntroMs': 2000},
-              ));
-            } else {
-              c.steps.removeWhere((s) => s.type == 'skipIntro');
-            }
-          });
-        },
-      ),
-
-      _OptionalStepToggle(
-        label: '限制空白时长',
-        stepType: 'limitBlankDuration',
-        config: config,
-        defaultConfig: const {'maxBlankDurationMs': 5000},
-        onToggle: (enabled) {
-          _mutate((c) {
-            if (enabled) {
-              c.steps.add(const TransformStep(
-                type: 'limitBlankDuration',
-                config: {'maxBlankDurationMs': 5000},
-              ));
-            } else {
-              c.steps.removeWhere((s) => s.type == 'limitBlankDuration');
-            }
-          });
-        },
-      ),
-
-      _OptionalStepToggle(
-        label: '合并相邻音符',
-        stepType: 'mergeNearbyNotes',
-        config: config,
-        defaultConfig: const {'maxIntervalMs': 30, 'maxBatchSize': 19},
-        onToggle: (enabled) {
-          _mutate((c) {
-            if (enabled) {
-              c.steps.add(const TransformStep(
+      if (_level == ConfigLevel.advanced) ...[
+        const SizedBox(height: 8),
+        _OptionalStepSwitch(
+          title: '移动高八度音符到音域内',
+          subtitle: '高于目标音域一个八度内的音符会降八度保留',
+          enabled: config.wrapHigherOctaveIntoRange,
+          onChanged: (enabled) =>
+              _mutate((c) => c.wrapHigherOctaveIntoRange = enabled),
+        ),
+        _OptionalStepSwitch(
+          title: '移动低八度音符到音域内',
+          subtitle: '低于目标音域一个八度内的音符会升八度保留',
+          enabled: config.wrapLowerOctaveIntoRange,
+          onChanged: (enabled) =>
+              _mutate((c) => c.wrapLowerOctaveIntoRange = enabled),
+        ),
+        _OptionalStepSwitch(
+          title: '合并过近音符',
+          subtitle: '把 50ms 内的相邻音组合成同一批',
+          enabled: _hasStep(config, 'mergeNearbyNotes'),
+          onChanged: (enabled) => _mutate(
+            (c) => _setOptionalStep(
+              c,
+              enabled: enabled,
+              step: const TransformStep(
                 type: 'mergeNearbyNotes',
-                config: {'maxIntervalMs': 30, 'maxBatchSize': 19},
-              ));
-            } else {
-              c.steps.removeWhere((s) => s.type == 'mergeNearbyNotes');
-            }
-          });
-        },
-      ),
-
-      _OptionalStepToggle(
-        label: '折叠高频重复音符',
-        stepType: 'foldFrequentSameNote',
-        config: config,
-        defaultConfig: const {'maxIntervalMs': 150},
-        onToggle: (enabled) {
-          _mutate((c) {
-            if (enabled) {
-              c.steps.add(const TransformStep(
+                config: {'maxIntervalMs': 50, 'maxBatchSize': 19},
+              ),
+            ),
+          ),
+        ),
+        _OptionalStepSwitch(
+          title: '折叠重复音符',
+          subtitle: '减少短时间内反复出现的同音',
+          enabled: _hasStep(config, 'foldFrequentSameNote'),
+          onChanged: (enabled) => _mutate(
+            (c) => _setOptionalStep(
+              c,
+              enabled: enabled,
+              step: const TransformStep(
                 type: 'foldFrequentSameNote',
                 config: {'maxIntervalMs': 150},
-              ));
-            } else {
-              c.steps.removeWhere((s) => s.type == 'foldFrequentSameNote');
-            }
-          });
-        },
-      ),
+              ),
+            ),
+          ),
+        ),
+      ],
     ];
   }
 
-  // -------------------------------------------------------------------------
-  // Expert: pipeline step list
-  // -------------------------------------------------------------------------
+  bool _hasStep(SongConfig config, String type) {
+    return config.steps.any((step) => step.type == type);
+  }
 
-  List<Widget> _buildExpertParams(SongConfig config) {
-    return [
-      Text(
-        'Pipeline 步骤',
-        style: Theme.of(context).textTheme.titleSmall?.copyWith(
-              color: Theme.of(context).colorScheme.primary,
-            ),
-      ),
-      const SizedBox(height: 8),
-      Text(
-        '共 ${config.steps.length} 步',
-        style: TextStyle(color: Theme.of(context).colorScheme.outline),
-      ),
-      const SizedBox(height: 8),
-      ReorderableListView.builder(
-        shrinkWrap: true,
-        physics: const NeverScrollableScrollPhysics(),
-        itemCount: config.steps.length,
-        onReorder: (oldIdx, newIdx) {
-          _mutate((c) {
-            if (newIdx > oldIdx) newIdx--;
-            final step = c.steps.removeAt(oldIdx);
-            c.steps.insert(newIdx, step);
-          });
-        },
-        itemBuilder: (context, index) {
-          final step = config.steps[index];
-          return ListTile(
-            key: ValueKey('$index-${step.type}'),
-            dense: true,
-            leading: ReorderableDragStartListener(
-              index: index,
-              child: const Icon(Icons.drag_handle, size: 20),
-            ),
-            title: Text(step.type, style: const TextStyle(fontSize: 13)),
-            subtitle: step.config.isNotEmpty
-                ? Text(
-                    step.config.entries
-                        .map((e) => '${e.key}: ${e.value}')
-                        .join(', '),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 11),
-                  )
-                : null,
-            trailing: IconButton(
-              icon: const Icon(Icons.delete_outline, size: 18),
-              onPressed: () {
-                _mutate((c) => c.steps.removeAt(index));
-              },
-            ),
-          );
-        },
-      ),
-    ];
+  void _setOptionalStep(
+    SongConfig config, {
+    required bool enabled,
+    required TransformStep step,
+  }) {
+    config.setOptionalTransformStep(enabled: enabled, step: step);
+  }
+
+  String _formatOffset(int value) {
+    if (value == 0) return '0';
+    return value > 0 ? '+$value' : '$value';
+  }
+
+  String _formatHumanify(double value) {
+    if (value == 0) return '关';
+    if (value <= 5) return '轻';
+    if (value <= 15) return '中';
+    return '强';
+  }
+
+  int? _simpleClickLimitValue(double? value) {
+    if (value == null) return null;
+    const options = <int>[5, 3, 2, 1];
+    for (final option in options) {
+      if ((value - option).abs() < 0.05) {
+        return option;
+      }
+    }
+    return null;
   }
 }
 
-// ---------------------------------------------------------------------------
-// Reusable param widgets
-// ---------------------------------------------------------------------------
+class _ReportSummary extends StatelessWidget {
+  const _ReportSummary({required this.reportAsync, required this.config});
+
+  final AsyncValue<ConfigReportSummary?> reportAsync;
+  final SongConfig config;
+
+  @override
+  Widget build(BuildContext context) {
+    return reportAsync.when(
+      data: (report) {
+        if (report == null) {
+          return const Text('选择乐曲和目标后会显示转换结果');
+        }
+        return Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            _MetricChip(
+              label: '音符',
+              value: '${report.inputNoteCount} -> ${report.outputNoteCount}',
+            ),
+            _MetricChip(label: '丢弃', value: '${report.pipelineNotesRemoved}'),
+            _MetricChip(label: '新增', value: '${report.pipelineNotesAdded}'),
+            _MetricChip(label: '超音域', value: '${report.outOfRangeDiscarded}'),
+            _MetricChip(label: '过密过滤', value: '${report.tooDenseDiscarded}'),
+            _MetricChip(label: '和弦过滤', value: '${report.chordNotesDiscarded}'),
+          ],
+        );
+      },
+      loading: () => const LinearProgressIndicator(minHeight: 2),
+      error: (error, _) => Text(
+        '转换报告生成失败: $error',
+        style: TextStyle(color: Theme.of(context).colorScheme.error),
+      ),
+    );
+  }
+}
+
+class _ExpertPipelineView extends StatelessWidget {
+  const _ExpertPipelineView({required this.steps});
+
+  final List<TransformStep> steps;
+
+  @override
+  Widget build(BuildContext context) {
+    return ExpansionTile(
+      tilePadding: EdgeInsets.zero,
+      initiallyExpanded: false,
+      leading: const Icon(Icons.account_tree_outlined),
+      title: Text('Pipeline（共 ${steps.length} 步）'),
+      subtitle: const Text('只读展示，用于确认内部 transform 顺序和参数'),
+      children: [
+        for (var index = 0; index < steps.length; index++)
+          ListTile(
+            dense: true,
+            contentPadding: EdgeInsets.zero,
+            leading: CircleAvatar(
+              radius: 13,
+              child: Text('${index + 1}', style: const TextStyle(fontSize: 11)),
+            ),
+            title: Text(_stepLabel(steps[index].type)),
+            subtitle: steps[index].config.isEmpty
+                ? const Text('无参数')
+                : Text(
+                    steps[index].config.entries
+                        .map((entry) => '${entry.key}: ${entry.value}')
+                        .join(', '),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+          ),
+      ],
+    );
+  }
+
+  static String _stepLabel(String type) {
+    return switch (type) {
+      'mergeTracks' => '合并音轨',
+      'removeEmptyTracks' => '移除空音轨',
+      'pitchOffset' => '移调',
+      'legalizeTargetNoteRange' => '音域合法化',
+      'storeCurrentNoteTime' => '保存原始时间',
+      'singleKeyFrequencyLimit' => '同键频率限制',
+      'bindLyrics' => '绑定歌词',
+      'noteToKey' => '映射到按键',
+      'mergeNearbyNotes' => '合并相邻音符',
+      'foldFrequentSameNote' => '折叠重复音符',
+      'estimateNoteDuration' => '估算音符时长',
+      'splitLongNote' => '拆分长音',
+      'speedChange' => '速度调整',
+      'limitBlankDuration' => '限制长空白',
+      'skipIntro' => '跳过前奏',
+      'noteFrequencySoftLimit' => '音符频率软限制',
+      'chordNoteCountLimit' => '和弦数量限制',
+      'humanify' => '人性化时间偏差',
+      _ => type,
+    };
+  }
+}
+
+class _TrackSelectionEditor extends StatelessWidget {
+  const _TrackSelectionEditor({
+    required this.selection,
+    required this.selectedTrackIndexes,
+    required this.onChanged,
+  });
+
+  final TrackSelectionAnalysis selection;
+  final List<int>? selectedTrackIndexes;
+  final ValueChanged<List<int>?> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  '音轨选择',
+                  style: TextStyle(fontWeight: FontWeight.w600),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  _selectionSummary(),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: Theme.of(context).colorScheme.outline,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 12),
+          OutlinedButton.icon(
+            onPressed: () => _showTrackSheet(context),
+            icon: const Icon(Icons.queue_music_outlined),
+            label: const Text('选择'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _selectionSummary() {
+    if (selectedTrackIndexes == null || selectedTrackIndexes!.isEmpty) {
+      return '全部音轨';
+    }
+    final selected = selectedTrackIndexes!.toSet();
+    final names = selection.recommendations
+        .where((item) => selected.contains(item.trackIndex))
+        .map((item) => '#${item.trackIndex + 1} ${item.trackName}')
+        .toList();
+    if (names.isEmpty) {
+      return '已选择 ${selected.length} 条音轨';
+    }
+    return names.join(', ');
+  }
+
+  Future<void> _showTrackSheet(BuildContext context) async {
+    final recommended = selection.recommendedTrackIndexes.toSet();
+    Set<int>? draft = selectedTrackIndexes == null
+        ? null
+        : Set<int>.from(selectedTrackIndexes!);
+    var applied = false;
+
+    final result = await showModalBottomSheet<List<int>?>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (sheetContext) {
+        return StatefulBuilder(
+          builder: (context, setSheetState) {
+            final allSelected = draft == null;
+            return SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Text(
+                          '音轨选择',
+                          style: Theme.of(context).textTheme.titleMedium
+                              ?.copyWith(fontWeight: FontWeight.w600),
+                        ),
+                        const Spacer(),
+                        TextButton(
+                          onPressed: recommended.isEmpty
+                              ? null
+                              : () {
+                                  setSheetState(() {
+                                    draft = Set<int>.from(recommended);
+                                  });
+                                },
+                          child: const Text('使用推荐'),
+                        ),
+                      ],
+                    ),
+                    Text(
+                      '只合并选中的音轨；不确定时选“全部”。',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: Theme.of(context).colorScheme.outline,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    ConstrainedBox(
+                      constraints: const BoxConstraints(maxHeight: 420),
+                      child: ListView(
+                        shrinkWrap: true,
+                        children: [
+                          CheckboxListTile(
+                            contentPadding: EdgeInsets.zero,
+                            title: const Text('全部音轨'),
+                            subtitle: const Text('不写入 selectedTracks'),
+                            value: allSelected,
+                            onChanged: (_) {
+                              setSheetState(() {
+                                draft = null;
+                              });
+                            },
+                          ),
+                          const Divider(height: 1),
+                          for (final item in selection.recommendations)
+                            CheckboxListTile(
+                              contentPadding: EdgeInsets.zero,
+                              secondary: SizedBox(
+                                width: 36,
+                                child: Text(
+                                  '#${item.trackIndex + 1}',
+                                  textAlign: TextAlign.center,
+                                  style: Theme.of(context).textTheme.titleSmall
+                                      ?.copyWith(fontWeight: FontWeight.w700),
+                                ),
+                              ),
+                              title: Text(item.trackName),
+                              subtitle: Text(_trackSubtitle(item)),
+                              value: draft?.contains(item.trackIndex) ?? false,
+                              onChanged: (_) {
+                                setSheetState(() {
+                                  final next = (draft ?? <int>{}).toSet();
+                                  if (next.contains(item.trackIndex)) {
+                                    next.remove(item.trackIndex);
+                                  } else {
+                                    next.add(item.trackIndex);
+                                  }
+                                  draft = next;
+                                });
+                              },
+                            ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    Row(
+                      children: [
+                        TextButton(
+                          onPressed: () => Navigator.of(sheetContext).pop(),
+                          child: const Text('取消'),
+                        ),
+                        const Spacer(),
+                        FilledButton(
+                          onPressed: () {
+                            final value = draft == null || draft!.isEmpty
+                                ? null
+                                : (draft!.toList()..sort());
+                            applied = true;
+                            Navigator.of(sheetContext).pop(value);
+                          },
+                          child: const Text('应用'),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+
+    if (applied) {
+      onChanged(result);
+    }
+  }
+
+  String _trackSubtitle(TrackPlayabilityRecommendation item) {
+    final ratio = (item.playableRatio * 100).round();
+    final parts = <String>[
+      if (item.recommended) '推荐',
+      if (item.isPercussion) '打击乐，默认不推荐',
+      '可演奏 $ratio%',
+      '${item.playableNoteCount}/${item.noteCount} 音符',
+    ];
+    return parts.join(' · ');
+  }
+}
+
+class _SectionHeader extends StatelessWidget {
+  const _SectionHeader({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+  });
+
+  final IconData icon;
+  final String title;
+  final String subtitle;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(icon, size: 20, color: scheme.primary),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                title,
+                style: Theme.of(
+                  context,
+                ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w600),
+              ),
+              Text(
+                subtitle,
+                style: Theme.of(
+                  context,
+                ).textTheme.bodySmall?.copyWith(color: scheme.outline),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _MetricChip extends StatelessWidget {
+  const _MetricChip({required this.label, required this.value});
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        border: Border.all(color: scheme.outlineVariant),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(label, style: TextStyle(color: scheme.outline)),
+            const SizedBox(width: 6),
+            Text(value, style: const TextStyle(fontWeight: FontWeight.w600)),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _FixOption<T> extends StatelessWidget {
+  const _FixOption({
+    required this.title,
+    required this.value,
+    required this.options,
+    required this.onChanged,
+  });
+
+  final String title;
+  final T value;
+  final Map<T, String> options;
+  final ValueChanged<T> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(title, style: const TextStyle(fontWeight: FontWeight.w600)),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            children: [
+              for (final entry in options.entries)
+                ChoiceChip(
+                  label: Text(entry.value),
+                  selected: entry.key == value,
+                  onSelected: (_) => onChanged(entry.key),
+                ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _OptionalStepSwitch extends StatelessWidget {
+  const _OptionalStepSwitch({
+    required this.title,
+    required this.subtitle,
+    required this.enabled,
+    required this.onChanged,
+  });
+
+  final String title;
+  final String subtitle;
+  final bool enabled;
+  final ValueChanged<bool> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return SwitchListTile(
+      contentPadding: EdgeInsets.zero,
+      title: Text(title),
+      subtitle: Text(subtitle),
+      value: enabled,
+      onChanged: onChanged,
+    );
+  }
+}
+
+class _ClickLimitSlider extends StatelessWidget {
+  const _ClickLimitSlider({required this.value, required this.onChanged});
+
+  final double? value;
+  final ValueChanged<double?> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final enabled = value != null;
+    final sliderValue = (value ?? 5).clamp(1.0, 10.0);
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Column(
+        children: [
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('限制点击速度'),
+            subtitle: Text(
+              enabled ? '每秒 ${sliderValue.toStringAsFixed(1)} 个' : '不限',
+            ),
+            value: enabled,
+            onChanged: (nextEnabled) =>
+                onChanged(nextEnabled ? sliderValue : null),
+          ),
+          if (enabled)
+            _SliderRow(
+              label: '上限',
+              value: sliderValue,
+              min: 1,
+              max: 10,
+              divisions: 90,
+              format: (v) => '${v.toStringAsFixed(1)}/s',
+              onChanged: onChanged,
+            ),
+        ],
+      ),
+    );
+  }
+}
 
 class _SliderRow extends StatelessWidget {
   const _SliderRow({
@@ -406,7 +814,6 @@ class _StepperRow extends StatelessWidget {
     required this.max,
     required this.format,
     required this.onChanged,
-    this.step = 1,
     this.suffix = '',
     this.recommendedValue,
   });
@@ -415,7 +822,6 @@ class _StepperRow extends StatelessWidget {
   final int value;
   final int min;
   final int max;
-  final int step;
   final String Function(int) format;
   final String suffix;
   final int? recommendedValue;
@@ -426,10 +832,10 @@ class _StepperRow extends StatelessWidget {
     final scheme = Theme.of(context).colorScheme;
     return Row(
       children: [
-        SizedBox(width: 100, child: Text(label)),
+        SizedBox(width: 72, child: Text(label)),
         IconButton(
           icon: const Icon(Icons.remove, size: 18),
-          onPressed: value > min ? () => onChanged(value - step) : null,
+          onPressed: value > min ? () => onChanged(value - 1) : null,
         ),
         Text(
           '${format(value)} $suffix',
@@ -437,7 +843,7 @@ class _StepperRow extends StatelessWidget {
         ),
         IconButton(
           icon: const Icon(Icons.add, size: 18),
-          onPressed: value < max ? () => onChanged(value + step) : null,
+          onPressed: value < max ? () => onChanged(value + 1) : null,
         ),
         if (recommendedValue != null && recommendedValue != value)
           TextButton(
@@ -453,115 +859,6 @@ class _StepperRow extends StatelessWidget {
             ),
           ),
       ],
-    );
-  }
-}
-
-class _NullableStepperRow extends StatelessWidget {
-  const _NullableStepperRow({
-    required this.label,
-    required this.value,
-    required this.min,
-    required this.max,
-    required this.format,
-    required this.onChanged,
-  });
-
-  final String label;
-  final int? value;
-  final int min;
-  final int max;
-  final String Function(int?) format;
-  final ValueChanged<int?> onChanged;
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      children: [
-        SizedBox(width: 120, child: Text(label)),
-        if (value == null)
-          TextButton(
-            onPressed: () => onChanged(min),
-            child: Text(format(null)),
-          )
-        else ...[
-          IconButton(
-            icon: const Icon(Icons.remove, size: 18),
-            onPressed: value! > min
-                ? () => onChanged(value! - 1)
-                : () => onChanged(null),
-          ),
-          Text(format(value),
-              style: const TextStyle(fontWeight: FontWeight.w500)),
-          IconButton(
-            icon: const Icon(Icons.add, size: 18),
-            onPressed: value! < max ? () => onChanged(value! + 1) : null,
-          ),
-        ],
-      ],
-    );
-  }
-}
-
-class _DropdownRow<T> extends StatelessWidget {
-  const _DropdownRow({
-    required this.label,
-    required this.value,
-    required this.items,
-    required this.onChanged,
-  });
-
-  final String label;
-  final T value;
-  final Map<T, String> items;
-  final ValueChanged<T> onChanged;
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      children: [
-        SizedBox(width: 120, child: Text(label)),
-        const SizedBox(width: 8),
-        Expanded(
-          child: DropdownMenu<T>(
-            expandedInsets: EdgeInsets.zero,
-            initialSelection: value,
-            dropdownMenuEntries: items.entries
-                .map((e) => DropdownMenuEntry(value: e.key, label: e.value))
-                .toList(),
-            onSelected: (v) {
-              if (v != null) onChanged(v);
-            },
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-class _OptionalStepToggle extends StatelessWidget {
-  const _OptionalStepToggle({
-    required this.label,
-    required this.stepType,
-    required this.config,
-    required this.defaultConfig,
-    required this.onToggle,
-  });
-
-  final String label;
-  final String stepType;
-  final SongConfig config;
-  final Map<String, Object?> defaultConfig;
-  final ValueChanged<bool> onToggle;
-
-  @override
-  Widget build(BuildContext context) {
-    final enabled = config.steps.any((s) => s.type == stepType);
-    return SwitchListTile(
-      contentPadding: EdgeInsets.zero,
-      title: Text(label),
-      value: enabled,
-      onChanged: (v) => onToggle(v),
     );
   }
 }
