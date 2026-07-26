@@ -24,6 +24,7 @@ export 'src/repository/yaml_layout_repository.dart';
 export 'src/repository/yaml_profile_repository.dart';
 export 'src/transform/pass_options.dart';
 export 'src/transform/passes.dart';
+export 'src/transform/recommended_pipeline_policy.dart';
 export 'src/transform/score_transformer.dart';
 export 'src/transform/transform_pipeline.dart';
 export 'src/transform/transform_report.dart';

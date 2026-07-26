@@ -88,11 +88,7 @@ void main() {
         result.tracks.first.notes
             .map((note) => (note.pitch, note.startMs, note.durationMs))
             .toList(),
-        <(int, int, int?)>[
-          (60, 0, 200),
-          (61, 70, 70),
-          (62, 110, null),
-        ],
+        <(int, int, int?)>[(60, 0, 200), (61, 70, 70), (62, 110, null)],
       );
       expect(result.tracks.first.notes[0].attrs['duration'], 200);
       expect(result.tracks.first.notes[1].attrs['duration'], 70);
@@ -131,7 +127,9 @@ void main() {
         <int?>[75, 150, 150, 100, 75, null],
       );
       expect(
-        result.tracks.first.notes.map((note) => note.attrs['duration']).toList(),
+        result.tracks.first.notes
+            .map((note) => note.attrs['duration'])
+            .toList(),
         <Object?>[75, 150, 150, 100, 75, null],
       );
     });
@@ -181,8 +179,7 @@ void main() {
       );
     });
 
-    test('NoteFrequencySoftLimitPass uses soft saturation instead of hard clamp',
-        () {
+    test('LimitBlankDurationPass preserves gaps after a compressed blank', () {
       const score = Score(
         format: SourceFormat.jsonScore,
         tracks: <Track>[
@@ -191,25 +188,54 @@ void main() {
             channel: 0,
             notes: <NoteEvent>[
               NoteEvent(pitch: 60, startMs: 0),
-              NoteEvent(pitch: 62, startMs: 80),
-              NoteEvent(pitch: 64, startMs: 160),
+              NoteEvent(pitch: 62, startMs: 10000),
+              NoteEvent(pitch: 64, startMs: 10100),
             ],
           ),
         ],
       );
 
-      final result = const NoteFrequencySoftLimitPass(
-        NoteFrequencySoftLimitOptions(minIntervalMs: 100),
+      final result = const LimitBlankDurationPass(
+        LimitBlankDurationOptions(maxBlankDurationMs: 5000),
       ).run(score);
 
       expect(
         result.score.tracks.first.notes.map((note) => note.startMs).toList(),
-        <int>[0, 118, 236],
+        <int>[0, 5000, 5100],
       );
-      expect(result.report.stats.single.values['delayedChordCount'], 2);
-      expect(result.report.stats.single.values['totalDelayMs'], 114);
-      expect(result.report.stats.single.values['maxDelayMs'], 76);
     });
+
+    test(
+      'NoteFrequencySoftLimitPass uses soft saturation instead of hard clamp',
+      () {
+        const score = Score(
+          format: SourceFormat.jsonScore,
+          tracks: <Track>[
+            Track(
+              name: 'Lead',
+              channel: 0,
+              notes: <NoteEvent>[
+                NoteEvent(pitch: 60, startMs: 0),
+                NoteEvent(pitch: 62, startMs: 80),
+                NoteEvent(pitch: 64, startMs: 160),
+              ],
+            ),
+          ],
+        );
+
+        final result = const NoteFrequencySoftLimitPass(
+          NoteFrequencySoftLimitOptions(minIntervalMs: 100),
+        ).run(score);
+
+        expect(
+          result.score.tracks.first.notes.map((note) => note.startMs).toList(),
+          <int>[0, 118, 236],
+        );
+        expect(result.report.stats.single.values['delayedChordCount'], 2);
+        expect(result.report.stats.single.values['totalDelayMs'], 114);
+        expect(result.report.stats.single.values['maxDelayMs'], 76);
+      },
+    );
 
     test('ChordNoteCountLimitPass supports legacy split mode semantics', () {
       const score = Score(

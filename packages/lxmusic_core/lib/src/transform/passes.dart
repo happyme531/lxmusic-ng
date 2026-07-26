@@ -1209,13 +1209,16 @@ List<NoteEvent> _limitBlankDuration(
   final sorted = List<NoteEvent>.from(notes)
     ..sort((a, b) => a.startMs.compareTo(b.startMs));
   final output = <NoteEvent>[];
-  var previousTime = 0;
+  var previousOriginalTime = 0;
+  var previousAdjustedTime = 0;
   for (final note in sorted) {
-    final gap = note.startMs - previousTime;
+    final gap = note.startMs - previousOriginalTime;
     final adjustedTime =
-        previousTime + (gap > maxBlankDurationMs ? maxBlankDurationMs : gap);
+        previousAdjustedTime +
+        (gap > maxBlankDurationMs ? maxBlankDurationMs : gap);
     output.add(note.copyWith(startMs: adjustedTime));
-    previousTime = adjustedTime;
+    previousOriginalTime = note.startMs;
+    previousAdjustedTime = adjustedTime;
   }
   return output;
 }

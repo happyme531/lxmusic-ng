@@ -123,14 +123,17 @@ void main() {
     );
   });
 
-  test('recommended pipeline preserves legacy step order for lyrics', () {
+  test('recommended pipeline merges notes inside the legacy 50ms window', () {
     const score = Score(
       format: SourceFormat.jsonScore,
       tracks: <Track>[
         Track(
           name: 'Lead',
           channel: 0,
-          notes: <NoteEvent>[NoteEvent(pitch: 60, startMs: 0)],
+          notes: <NoteEvent>[
+            NoteEvent(pitch: 60, startMs: 0),
+            NoteEvent(pitch: 62, startMs: 40),
+          ],
         ),
       ],
     );
@@ -143,24 +146,71 @@ void main() {
         layout: layout,
       ),
     );
+    final result = analysis.buildRecommendedPipeline().run(score);
 
-    final steps = analysis.buildRecommendedPipeline().steps;
     expect(
-      steps.map((step) => step.type).toList(),
-      <String>[
-        'mergeTracks',
-        'legalizeTargetNoteRange',
-        'storeCurrentNoteTime',
-        'singleKeyFrequencyLimit',
-        'bindLyrics',
-        'noteToKey',
-      ],
-    );
-    expect(
-      steps.firstWhere((step) => step.type == 'bindLyrics').config,
-      <String, Object?>{'useStoredOriginalTime': true},
+      result.score.tracks.first.notes.map((note) => note.startMs).toList(),
+      <int>[0, 0],
     );
   });
+
+  test(
+    'recommended pipeline follows the legacy-compatible canonical order',
+    () {
+      const score = Score(
+        format: SourceFormat.jsonScore,
+        tracks: <Track>[
+          Track(
+            name: 'Lead',
+            channel: 0,
+            notes: <NoteEvent>[NoteEvent(pitch: 60, startMs: 0)],
+          ),
+        ],
+      );
+
+      final analysis = analyzeScoreForTarget(
+        score,
+        target: AnalysisTarget(
+          profile: profile,
+          variant: profile.variants.first,
+          layout: layout,
+        ),
+      );
+
+      final steps = analysis.buildRecommendedPipeline().steps;
+      expect(steps.map((step) => step.type).toList(), <String>[
+        'mergeTracks',
+        'storeCurrentNoteTime',
+        'mergeNearbyNotes',
+        'legalizeTargetNoteRange',
+        'singleKeyFrequencyLimit',
+        'skipIntro',
+        'limitBlankDuration',
+        'bindLyrics',
+        'noteToKey',
+      ]);
+      expect(
+        steps.firstWhere((step) => step.type == 'mergeNearbyNotes').config,
+        <String, Object?>{'maxIntervalMs': 50, 'maxBatchSize': 19},
+      );
+      expect(
+        steps.firstWhere((step) => step.type == 'bindLyrics').config,
+        <String, Object?>{'useStoredOriginalTime': true},
+      );
+      expect(
+        steps
+            .firstWhere((step) => step.type == 'legalizeTargetNoteRange')
+            .config,
+        containsPair('wrapHigherOctave', 1),
+      );
+      expect(
+        steps
+            .firstWhere((step) => step.type == 'legalizeTargetNoteRange')
+            .config,
+        containsPair('wrapLowerOctave', 0),
+      );
+    },
+  );
 
   test('recommends playable tracks for multi-track scores', () {
     const score = Score(
@@ -207,23 +257,170 @@ void main() {
     expect(analysis.trackSelection!.recommendedTrackIndexes, <int>[0]);
     expect(
       analysis.trackSelection!.recommendations
-          .map((entry) => (entry.trackIndex, entry.playableRatio, entry.recommended))
+          .map(
+            (entry) =>
+                (entry.trackIndex, entry.playableRatio, entry.recommended),
+          )
           .toList(),
-      <(int, double, bool)>[
-        (0, 1.0, true),
-        (2, 0.5, false),
-        (1, 0.0, false),
-      ],
+      <(int, double, bool)>[(0, 1.0, true), (1, 0.0, false), (2, 0.5, false)],
     );
 
     final config = analysis.toConfigJson();
-    final steps = ((config['pipeline'] as Map<String, Object?>)['steps']
-            as List<Object?>)
-        .cast<Map<Object?, Object?>>();
-    final mergeTracks = steps.firstWhere((step) => step['type'] == 'mergeTracks');
+    final steps =
+        ((config['pipeline'] as Map<String, Object?>)['steps'] as List<Object?>)
+            .cast<Map<Object?, Object?>>();
+    final mergeTracks = steps.firstWhere(
+      (step) => step['type'] == 'mergeTracks',
+    );
     expect(
-      Map<String, Object?>.from(mergeTracks['config']! as Map)['selectedTracks'],
+      Map<String, Object?>.from(
+        mergeTracks['config']! as Map,
+      )['selectedTracks'],
       <int>[0],
+    );
+    expect(
+      Map<String, Object?>.from(
+        mergeTracks['config']! as Map,
+      )['skipPercussion'],
+      isFalse,
+    );
+  });
+
+  test('does not recommend percussion tracks by default', () {
+    const score = Score(
+      format: SourceFormat.jsonScore,
+      tracks: <Track>[
+        Track(
+          name: 'Drums',
+          channel: 9,
+          notes: <NoteEvent>[
+            NoteEvent(pitch: 60, startMs: 0),
+            NoteEvent(pitch: 62, startMs: 100),
+          ],
+        ),
+        Track(
+          name: 'Lead',
+          channel: 0,
+          notes: <NoteEvent>[NoteEvent(pitch: 60, startMs: 0)],
+        ),
+      ],
+    );
+
+    final analysis = analyzeScoreForTarget(
+      score,
+      target: AnalysisTarget(
+        profile: profile,
+        variant: profile.variants.first,
+        layout: layout,
+      ),
+    );
+
+    expect(analysis.trackSelection!.recommendedTrackIndexes, <int>[1]);
+    expect(analysis.trackSelection!.recommendations.first.isPercussion, isTrue);
+    expect(
+      analysis.trackSelection!.recommendations.first.toJson()['isPercussion'],
+      isTrue,
+    );
+  });
+
+  test('can include percussion tracks in recommendations when requested', () {
+    const score = Score(
+      format: SourceFormat.jsonScore,
+      tracks: <Track>[
+        Track(
+          name: 'Drums',
+          channel: 9,
+          notes: <NoteEvent>[
+            NoteEvent(pitch: 60, startMs: 0),
+            NoteEvent(pitch: 62, startMs: 100),
+          ],
+        ),
+        Track(
+          name: 'Lead',
+          channel: 0,
+          notes: <NoteEvent>[NoteEvent(pitch: 60, startMs: 0)],
+        ),
+      ],
+    );
+
+    final analysis = analyzeScoreForTarget(
+      score,
+      target: AnalysisTarget(
+        profile: profile,
+        variant: profile.variants.first,
+        layout: layout,
+      ),
+      skipPercussionTracks: false,
+    );
+
+    expect(analysis.trackSelection!.recommendedTrackIndexes, <int>[0, 1]);
+  });
+
+  test('falls back to percussion when every track is percussion', () {
+    const score = Score(
+      format: SourceFormat.jsonScore,
+      tracks: <Track>[
+        Track(
+          name: 'Drums A',
+          channel: 9,
+          notes: <NoteEvent>[NoteEvent(pitch: 60, startMs: 0)],
+        ),
+        Track(
+          name: 'Drums B',
+          channel: 9,
+          notes: <NoteEvent>[NoteEvent(pitch: 62, startMs: 0)],
+        ),
+      ],
+    );
+
+    final analysis = analyzeScoreForTarget(
+      score,
+      target: AnalysisTarget(
+        profile: profile,
+        variant: profile.variants.first,
+        layout: layout,
+      ),
+    );
+
+    expect(analysis.trackSelection!.recommendedTrackIndexes, isNotEmpty);
+  });
+
+  test('fixed pitch offset drives track selection analysis', () {
+    const score = Score(
+      format: SourceFormat.jsonScore,
+      tracks: <Track>[
+        Track(
+          name: 'NeedsNoOffset',
+          channel: 0,
+          notes: <NoteEvent>[NoteEvent(pitch: 60, startMs: 0)],
+        ),
+        Track(
+          name: 'NeedsPositiveOffset',
+          channel: 1,
+          notes: <NoteEvent>[NoteEvent(pitch: 48, startMs: 0)],
+        ),
+      ],
+    );
+
+    final analysis = analyzeScoreForTarget(
+      score,
+      target: AnalysisTarget(
+        profile: profile,
+        variant: profile.variants.first,
+        layout: layout,
+      ),
+      fixedPitchOffset: 12,
+    );
+
+    expect(analysis.pitchOffset.bestOffset, 12);
+    expect(analysis.pitchOffset.bestCandidate.offset, 12);
+    expect(analysis.pitchOffset.candidates, hasLength(1));
+    expect(analysis.trackSelection!.recommendedTrackIndexes, <int>[1]);
+    expect(
+      analysis.trackSelection!.recommendations.map(
+        (entry) => (entry.trackIndex, entry.playableRatio),
+      ),
+      <(int, double)>[(0, 0.0), (1, 1.0)],
     );
   });
 }

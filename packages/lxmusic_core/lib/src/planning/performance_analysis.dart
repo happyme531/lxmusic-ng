@@ -2,6 +2,7 @@ import '../domain/game_profile.dart';
 import '../domain/score.dart';
 import '../transform/pass_options.dart';
 import '../transform/passes.dart';
+import '../transform/recommended_pipeline_policy.dart';
 import '../transform/transform_pipeline.dart';
 
 class AnalysisTarget {
@@ -94,6 +95,7 @@ class TrackPlayabilityRecommendation {
   const TrackPlayabilityRecommendation({
     required this.trackIndex,
     required this.trackName,
+    required this.isPercussion,
     required this.noteCount,
     required this.playableNoteCount,
     required this.playableRatio,
@@ -105,6 +107,7 @@ class TrackPlayabilityRecommendation {
 
   final int trackIndex;
   final String trackName;
+  final bool isPercussion;
   final int noteCount;
   final int playableNoteCount;
   final double playableRatio;
@@ -117,6 +120,7 @@ class TrackPlayabilityRecommendation {
     return <String, Object?>{
       'trackIndex': trackIndex,
       'trackName': trackName,
+      'isPercussion': isPercussion,
       'noteCount': noteCount,
       'playableNoteCount': playableNoteCount,
       'playableRatio': playableRatio,
@@ -167,49 +171,63 @@ class ScoreAnalysis {
     SemiToneRoundingMode roundingMode = SemiToneRoundingMode.floor,
   }) {
     final supported = target.supportedPitches;
-    final mergeTracksConfig = <String, Object?>{'skipPercussion': true};
+    final mergeTracksConfig = <String, Object?>{'skipPercussion': false};
     if (trackSelection != null &&
         trackSelection!.recommendedTrackIndexes.isNotEmpty &&
         source.tracks.length > 1) {
-      mergeTracksConfig['selectedTracks'] = trackSelection!.recommendedTrackIndexes;
+      mergeTracksConfig['selectedTracks'] =
+          trackSelection!.recommendedTrackIndexes;
     }
-    return TransformPipeline(<TransformStep>[
-      TransformStep(
-        type: 'mergeTracks',
-        config: mergeTracksConfig,
-      ),
-      if (pitchOffset.bestOffset != 0)
-        TransformStep(
-          type: 'pitchOffset',
-          config: <String, Object?>{'offset': pitchOffset.bestOffset},
+    return TransformPipeline(
+      canonicalizeRecommendedTransformSteps(<TransformStep>[
+        TransformStep(type: 'mergeTracks', config: mergeTracksConfig),
+        const TransformStep(type: 'storeCurrentNoteTime'),
+        const TransformStep(
+          type: 'mergeNearbyNotes',
+          config: <String, Object?>{'maxIntervalMs': 50, 'maxBatchSize': 19},
         ),
-      TransformStep(
-        type: 'legalizeTargetNoteRange',
-        config: <String, Object?>{
-          'supportedPitches': supported,
-          'semiToneRoundingMode': roundingMode.name,
-          'wrapHigherOctave': 0,
-          'wrapLowerOctave': 0,
-        },
-      ),
-      const TransformStep(type: 'storeCurrentNoteTime'),
-      TransformStep(
-        type: 'singleKeyFrequencyLimit',
-        config: <String, Object?>{'minIntervalMs': target.sameKeyMinIntervalMs},
-      ),
-      const TransformStep(
-        type: 'bindLyrics',
-        config: <String, Object?>{'useStoredOriginalTime': true},
-      ),
-      TransformStep(
-        type: 'noteToKey',
-        config: <String, Object?>{
-          'pitchToKeyId': target.layout.pitchToKeyId.map(
-            (key, value) => MapEntry(key.toString(), value),
+        if (pitchOffset.bestOffset != 0)
+          TransformStep(
+            type: 'pitchOffset',
+            config: <String, Object?>{'offset': pitchOffset.bestOffset},
           ),
-        },
-      ),
-    ]);
+        TransformStep(
+          type: 'legalizeTargetNoteRange',
+          config: <String, Object?>{
+            'supportedPitches': supported,
+            'semiToneRoundingMode': roundingMode.name,
+            'wrapHigherOctave': 1,
+            'wrapLowerOctave': 0,
+          },
+        ),
+        TransformStep(
+          type: 'singleKeyFrequencyLimit',
+          config: <String, Object?>{
+            'minIntervalMs': target.sameKeyMinIntervalMs,
+          },
+        ),
+        const TransformStep(
+          type: 'skipIntro',
+          config: <String, Object?>{'maxIntroMs': 2000},
+        ),
+        const TransformStep(
+          type: 'limitBlankDuration',
+          config: <String, Object?>{'maxBlankDurationMs': 5000},
+        ),
+        const TransformStep(
+          type: 'bindLyrics',
+          config: <String, Object?>{'useStoredOriginalTime': true},
+        ),
+        TransformStep(
+          type: 'noteToKey',
+          config: <String, Object?>{
+            'pitchToKeyId': target.layout.pitchToKeyId.map(
+              (key, value) => MapEntry(key.toString(), value),
+            ),
+          },
+        ),
+      ]),
+    );
   }
 
   Map<String, Object?> toAnalysisJson() {
@@ -225,8 +243,7 @@ class ScoreAnalysis {
       'notes': <String>[
         '当前 analyze 主要覆盖移调和目标可演奏音域合法化。',
         '同键频率限制、歌词绑定、按键映射等步骤会直接写入推荐转换配置。',
-        if (trackSelection != null)
-          '多音轨输入会按推荐移调评估每条音轨的可演奏比例，并给出推荐选轨。',
+        if (trackSelection != null) '多音轨输入会按推荐移调评估每条音轨的可演奏比例，并给出推荐选轨。',
       ],
     };
   }
@@ -263,13 +280,23 @@ ScoreAnalysis analyzeScoreForTarget(
   required AnalysisTarget target,
   SemiToneRoundingMode roundingMode = SemiToneRoundingMode.floor,
   double trackDisableThreshold = 0.5,
+  bool skipPercussionTracks = true,
+  int? fixedPitchOffset,
 }) {
   final merged = const MergeTracksPass(MergeTracksOptions()).run(score).score;
-  final pitchOffset = inferBestPitchOffset(
-    score: merged,
-    supportedPitches: target.supportedPitches,
-    roundingMode: roundingMode,
-  );
+  final supportedPitches = target.supportedPitches;
+  final pitchOffset = fixedPitchOffset == null
+      ? inferBestPitchOffset(
+          score: merged,
+          supportedPitches: supportedPitches,
+          roundingMode: roundingMode,
+        )
+      : evaluateFixedPitchOffset(
+          score: merged,
+          supportedPitches: supportedPitches,
+          roundingMode: roundingMode,
+          offset: fixedPitchOffset,
+        );
   return ScoreAnalysis(
     source: score,
     target: target,
@@ -277,10 +304,30 @@ ScoreAnalysis analyzeScoreForTarget(
     trackSelection: analyzeTrackSelection(
       score: score,
       recommendedOffset: pitchOffset.bestOffset,
-      supportedPitches: target.supportedPitches,
+      supportedPitches: supportedPitches,
       roundingMode: roundingMode,
       threshold: trackDisableThreshold,
+      skipPercussionTracks: skipPercussionTracks,
     ),
+  );
+}
+
+PitchOffsetInference evaluateFixedPitchOffset({
+  required Score score,
+  required List<int> supportedPitches,
+  required SemiToneRoundingMode roundingMode,
+  required int offset,
+}) {
+  final candidate = evaluatePitchOffset(
+    score: score,
+    supportedPitches: supportedPitches,
+    roundingMode: roundingMode,
+    offset: offset,
+  );
+  return PitchOffsetInference(
+    bestOffset: offset,
+    bestCandidate: candidate,
+    candidates: <PitchOffsetCandidate>[candidate],
   );
 }
 
@@ -290,21 +337,26 @@ TrackSelectionAnalysis? analyzeTrackSelection({
   required List<int> supportedPitches,
   required SemiToneRoundingMode roundingMode,
   required double threshold,
+  bool skipPercussionTracks = true,
 }) {
   if (score.tracks.length <= 1) {
     return null;
   }
 
-  final ranked = <({
-    int trackIndex,
-    Track track,
-    int noteCount,
-    int playableNoteCount,
-    double playableRatio,
-    int overFlowedNoteCount,
-    int underFlowedNoteCount,
-    int roundedNoteCount,
-  })>[];
+  final ranked =
+      <
+        ({
+          int trackIndex,
+          Track track,
+          int noteCount,
+          int playableNoteCount,
+          double playableRatio,
+          int overFlowedNoteCount,
+          int underFlowedNoteCount,
+          int roundedNoteCount,
+          bool isPercussion,
+        })
+      >[];
 
   for (var trackIndex = 0; trackIndex < score.tracks.length; trackIndex++) {
     final track = score.tracks[trackIndex];
@@ -339,6 +391,7 @@ TrackSelectionAnalysis? analyzeTrackSelection({
       overFlowedNoteCount: overflow,
       underFlowedNoteCount: underflow,
       roundedNoteCount: rounded,
+      isPercussion: track.channel == 9,
     ));
   }
 
@@ -354,9 +407,15 @@ TrackSelectionAnalysis? analyzeTrackSelection({
     return a.trackIndex.compareTo(b.trackIndex);
   });
 
+  final recommendationCandidates = skipPercussionTracks
+      ? ranked.where((entry) => !entry.isPercussion).toList()
+      : ranked;
+  final effectiveCandidates = recommendationCandidates.isNotEmpty
+      ? recommendationCandidates
+      : ranked;
   final recommendedTrackIndexes = <int>[
-    ranked.first.trackIndex,
-    ...ranked
+    effectiveCandidates.first.trackIndex,
+    ...effectiveCandidates
         .skip(1)
         .where((entry) => entry.playableRatio > threshold)
         .map((entry) => entry.trackIndex),
@@ -366,21 +425,23 @@ TrackSelectionAnalysis? analyzeTrackSelection({
   return TrackSelectionAnalysis(
     threshold: threshold,
     recommendedTrackIndexes: recommendedTrackIndexes,
-    recommendations: ranked
-        .map(
-          (entry) => TrackPlayabilityRecommendation(
-            trackIndex: entry.trackIndex,
-            trackName: entry.track.name,
-            noteCount: entry.noteCount,
-            playableNoteCount: entry.playableNoteCount,
-            playableRatio: entry.playableRatio,
-            overFlowedNoteCount: entry.overFlowedNoteCount,
-            underFlowedNoteCount: entry.underFlowedNoteCount,
-            roundedNoteCount: entry.roundedNoteCount,
-            recommended: recommendedSet.contains(entry.trackIndex),
-          ),
-        )
-        .toList(),
+    recommendations:
+        (ranked.toList()..sort((a, b) => a.trackIndex.compareTo(b.trackIndex)))
+            .map(
+              (entry) => TrackPlayabilityRecommendation(
+                trackIndex: entry.trackIndex,
+                trackName: entry.track.name,
+                isPercussion: entry.isPercussion,
+                noteCount: entry.noteCount,
+                playableNoteCount: entry.playableNoteCount,
+                playableRatio: entry.playableRatio,
+                overFlowedNoteCount: entry.overFlowedNoteCount,
+                underFlowedNoteCount: entry.underFlowedNoteCount,
+                roundedNoteCount: entry.roundedNoteCount,
+                recommended: recommendedSet.contains(entry.trackIndex),
+              ),
+            )
+            .toList(),
   );
 }
 
@@ -391,35 +452,11 @@ PitchOffsetInference inferBestPitchOffset({
 }) {
   const majorOffsets = <int>[0, -1, 1, -2, 2];
   const minorOffsets = <int>[0, 1, -1, 2, -2, 3, -3, 4, -4, 5, 6, 7];
-  const overFlowWeight = 5;
   const betterResultThreshold = 0.05;
 
   var bestMajor = 0;
   var bestMinor = 0;
   final candidates = <PitchOffsetCandidate>[];
-
-  PitchOffsetCandidate evaluate(int offset) {
-    final shifted = PitchOffsetPass(
-      PitchOffsetOptions(offset: offset),
-    ).run(score);
-    final legalized = LegalizeTargetNoteRangePass(
-      LegalizeTargetNoteRangeOptions(
-        supportedPitches: supportedPitches,
-        semiToneRoundingMode: roundingMode,
-      ),
-    ).run(shifted.score);
-    final stat = legalized.report.stats.single;
-    final overflow = (stat.values['overFlowedNoteCount'] as int?) ?? 0;
-    final underflow = (stat.values['underFlowedNoteCount'] as int?) ?? 0;
-    final rounded = (stat.values['roundedNoteCount'] as int?) ?? 0;
-    return PitchOffsetCandidate(
-      offset: offset,
-      outRangedWeight: overflow * overFlowWeight + underflow,
-      overFlowedNoteCount: overflow,
-      underFlowedNoteCount: underflow,
-      roundedNoteCount: rounded,
-    );
-  }
 
   bool isSignificantlyBetter(int previous, int current) {
     return previous - current > current * betterResultThreshold;
@@ -427,7 +464,12 @@ PitchOffsetInference inferBestPitchOffset({
 
   var bestOutRanged = 1 << 30;
   for (final major in majorOffsets) {
-    final candidate = evaluate(major * 12);
+    final candidate = evaluatePitchOffset(
+      score: score,
+      supportedPitches: supportedPitches,
+      roundingMode: roundingMode,
+      offset: major * 12,
+    );
     candidates.add(candidate);
     if (isSignificantlyBetter(bestOutRanged, candidate.outRangedWeight)) {
       bestOutRanged = candidate.outRangedWeight;
@@ -437,7 +479,12 @@ PitchOffsetInference inferBestPitchOffset({
 
   var bestRounded = 1 << 30;
   for (final minor in minorOffsets) {
-    final candidate = evaluate(bestMajor * 12 + minor);
+    final candidate = evaluatePitchOffset(
+      score: score,
+      supportedPitches: supportedPitches,
+      roundingMode: roundingMode,
+      offset: bestMajor * 12 + minor,
+    );
     candidates.add(candidate);
     if (isSignificantlyBetter(bestRounded, candidate.roundedNoteCount)) {
       bestRounded = candidate.roundedNoteCount;
@@ -448,7 +495,12 @@ PitchOffsetInference inferBestPitchOffset({
   PitchOffsetCandidate? bestCandidate;
   bestOutRanged = 1 << 30;
   for (final major in majorOffsets) {
-    final candidate = evaluate(major * 12 + bestMinor);
+    final candidate = evaluatePitchOffset(
+      score: score,
+      supportedPitches: supportedPitches,
+      roundingMode: roundingMode,
+      offset: major * 12 + bestMinor,
+    );
     candidates.add(candidate);
     if (isSignificantlyBetter(bestOutRanged, candidate.outRangedWeight)) {
       bestOutRanged = candidate.outRangedWeight;
@@ -457,11 +509,45 @@ PitchOffsetInference inferBestPitchOffset({
     }
   }
 
-  bestCandidate ??= evaluate(bestMajor * 12 + bestMinor);
+  bestCandidate ??= evaluatePitchOffset(
+    score: score,
+    supportedPitches: supportedPitches,
+    roundingMode: roundingMode,
+    offset: bestMajor * 12 + bestMinor,
+  );
 
   return PitchOffsetInference(
     bestOffset: bestCandidate.offset,
     bestCandidate: bestCandidate,
     candidates: candidates,
+  );
+}
+
+PitchOffsetCandidate evaluatePitchOffset({
+  required Score score,
+  required List<int> supportedPitches,
+  required SemiToneRoundingMode roundingMode,
+  required int offset,
+}) {
+  const overFlowWeight = 5;
+  final shifted = PitchOffsetPass(
+    PitchOffsetOptions(offset: offset),
+  ).run(score);
+  final legalized = LegalizeTargetNoteRangePass(
+    LegalizeTargetNoteRangeOptions(
+      supportedPitches: supportedPitches,
+      semiToneRoundingMode: roundingMode,
+    ),
+  ).run(shifted.score);
+  final stat = legalized.report.stats.single;
+  final overflow = (stat.values['overFlowedNoteCount'] as int?) ?? 0;
+  final underflow = (stat.values['underFlowedNoteCount'] as int?) ?? 0;
+  final rounded = (stat.values['roundedNoteCount'] as int?) ?? 0;
+  return PitchOffsetCandidate(
+    offset: offset,
+    outRangedWeight: overflow * overFlowWeight + underflow,
+    overFlowedNoteCount: overflow,
+    underFlowedNoteCount: underflow,
+    roundedNoteCount: rounded,
   );
 }
