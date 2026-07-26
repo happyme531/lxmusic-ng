@@ -24,7 +24,13 @@ class BackendConstraints {
     this.marginDurationMs = 100,
     this.pressDurationMs = 5,
     this.metadata = const {},
-  });
+  }) : assert(maxSimultaneousTouches > 0),
+       assert(minTapGapMs >= 0),
+       assert(gestureBatchWindowMs >= 0),
+       assert(maxGestureDurationMs > 0),
+       assert(marginDurationMs >= 0),
+       assert(pressDurationMs > 0),
+       assert(pressDurationMs <= maxGestureDurationMs);
 
   final String backendId;
   final bool supportsHold;
@@ -32,6 +38,8 @@ class BackendConstraints {
   final int minTapGapMs;
   final int gestureBatchWindowMs;
   final Set<String> supportedKinds;
+
+  /// Maximum duration of one touch stroke, not the span of a batched action.
   final int maxGestureDurationMs;
   final int marginDurationMs;
   final int pressDurationMs;

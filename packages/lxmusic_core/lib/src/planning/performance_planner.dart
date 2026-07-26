@@ -24,8 +24,7 @@ class PerformancePlanner {
 
     for (final entry
         in grouped.entries.toList()..sort((a, b) => a.key.compareTo(b.key))) {
-      final keyIds = <String>[];
-      var durationMs = 0;
+      final durationMsByKeyId = <String, int?>{};
 
       for (final note in entry.value) {
         final mappedPitch =
@@ -58,6 +57,26 @@ class PerformancePlanner {
           continue;
         }
 
+        final noteDurationMs = note.durationMs == null
+            ? null
+            : note.durationMs! < 0
+            ? 0
+            : note.durationMs;
+        if (!durationMsByKeyId.containsKey(keyId)) {
+          durationMsByKeyId[keyId] = noteDurationMs;
+          continue;
+        }
+
+        final existingDurationMs = durationMsByKeyId[keyId];
+        if (existingDurationMs == null ||
+            (noteDurationMs != null && noteDurationMs > existingDurationMs)) {
+          durationMsByKeyId[keyId] = noteDurationMs;
+        }
+      }
+
+      final acceptedDurationMsByKeyId = <String, int?>{};
+      final sortedKeyIds = durationMsByKeyId.keys.toList()..sort();
+      for (final keyId in sortedKeyIds) {
         final lastPlayedAt = lastKeyTime[keyId];
         if (lastPlayedAt != null &&
             entry.key - lastPlayedAt < sameKeyMinInterval) {
@@ -70,20 +89,15 @@ class PerformancePlanner {
           );
           continue;
         }
-
-        keyIds.add(keyId);
+        acceptedDurationMsByKeyId[keyId] = durationMsByKeyId[keyId];
         lastKeyTime[keyId] = entry.key;
-        if (note.durationMs != null && note.durationMs! > durationMs) {
-          durationMs = note.durationMs!;
-        }
       }
 
-      if (keyIds.isNotEmpty) {
+      if (acceptedDurationMsByKeyId.isNotEmpty) {
         actions.add(
-          SemanticAction(
+          SemanticAction.perKey(
             atMs: entry.key,
-            durationMs: durationMs,
-            keyIds: keyIds.toSet().toList()..sort(),
+            durationMsByKeyId: acceptedDurationMsByKeyId,
           ),
         );
       }

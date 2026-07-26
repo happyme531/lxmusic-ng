@@ -15,6 +15,10 @@ class BackendCompiler {
     if (preferredKind == null) {
       return _compileOverlayHints(plan, context);
     }
+    _validateSimultaneousTouchCapacity(
+      plan.actions,
+      context.constraints.maxSimultaneousTouches,
+    );
 
     final actions = <ExecutableAction>[];
     final batches = preferredKind == ExecutableActionKind.touchGesture
@@ -43,11 +47,14 @@ class BackendCompiler {
     return ExecutablePlan(
       backendId: context.constraints.backendId,
       actions: actions,
-      totalDurationMs: plan.totalDurationMs,
+      totalDurationMs: _resolveTotalDurationMs(plan.totalDurationMs, actions),
     );
   }
 
-  ExecutablePlan _compileOverlayHints(SemanticPlan plan, BackendContext context) {
+  ExecutablePlan _compileOverlayHints(
+    SemanticPlan plan,
+    BackendContext context,
+  ) {
     final actions = <ExecutableAction>[
       for (final action in plan.actions)
         ExecutableAction(
@@ -56,6 +63,8 @@ class BackendCompiler {
           kind: ExecutableActionKind.overlayHint,
           payload: <String, Object?>{
             'keyIds': action.keyIds,
+            if (action.durationMsByKeyId.isNotEmpty)
+              'durationMsByKeyId': action.durationMsByKeyId,
             'backendId': context.constraints.backendId,
             'supportsHold': context.constraints.supportsHold,
           },
@@ -65,8 +74,45 @@ class BackendCompiler {
     return ExecutablePlan(
       backendId: context.constraints.backendId,
       actions: actions,
-      totalDurationMs: plan.totalDurationMs,
+      totalDurationMs: _resolveTotalDurationMs(plan.totalDurationMs, actions),
     );
+  }
+
+  int _resolveTotalDurationMs(
+    int semanticTotalDurationMs,
+    List<ExecutableAction> actions,
+  ) {
+    var totalDurationMs = semanticTotalDurationMs;
+    for (final action in actions) {
+      final endMs = action.atMs + action.durationMs;
+      if (endMs > totalDurationMs) {
+        totalDurationMs = endMs;
+      }
+    }
+    return totalDurationMs;
+  }
+
+  void _validateSimultaneousTouchCapacity(
+    List<SemanticAction> actions,
+    int maxTouches,
+  ) {
+    final keyIdsByStartMs = <int, Set<String>>{};
+    for (final action in actions) {
+      final keyIds = keyIdsByStartMs.putIfAbsent(action.atMs, () => <String>{});
+      for (final keyId in action.keyIds) {
+        if (!keyIds.add(keyId)) {
+          throw StateError('Duplicate key $keyId at ${action.atMs}ms.');
+        }
+      }
+    }
+    for (final entry in keyIdsByStartMs.entries) {
+      if (entry.value.length > maxTouches) {
+        throw StateError(
+          'Action at ${entry.key}ms requires ${entry.value.length} '
+          'simultaneous touches, but the backend supports $maxTouches.',
+        );
+      }
+    }
   }
 
   ExecutableActionKind? _resolvePreferredActionKind(BackendContext context) {
@@ -129,17 +175,19 @@ class BackendCompiler {
       return const <_ActionBatch>[];
     }
 
-    final notes = <_BatchKey>[
-      for (final action in actions)
-        for (final keyId in action.keyIds)
-          _BatchKey(
-            keyId: keyId,
-            atMs: action.atMs,
-            durationMs: action.durationMs > constraints.maxGestureDurationMs
-                ? constraints.maxGestureDurationMs
-                : action.durationMs,
-          ),
-    ]..sort((a, b) => a.atMs.compareTo(b.atMs));
+    final notes =
+        <_BatchKey>[
+          for (final action in actions)
+            for (final keyId in action.keyIds)
+              _gestureBatchKey(
+                action: action,
+                keyId: keyId,
+                constraints: constraints,
+              ),
+        ]..sort((a, b) {
+          final timeOrder = a.atMs.compareTo(b.atMs);
+          return timeOrder != 0 ? timeOrder : a.keyId.compareTo(b.keyId);
+        });
 
     final groups = <List<_BatchKey>>[];
     var currentGroup = <_BatchKey>[];
@@ -168,22 +216,26 @@ class BackendCompiler {
               note.atMs - currentGroupEndMs > epsMid);
 
       if (shouldSplit) {
-        _truncateGroupToNextStart(
-          currentGroup,
-          note.atMs,
-          constraints.marginDurationMs,
-        );
-        groups.add(currentGroup);
-        currentGroup = <_BatchKey>[note];
-        currentGroupEndMs = noteEndMs;
+        final sameStartKeys = currentGroup
+            .where((key) => key.atMs == note.atMs)
+            .toList();
+        if (sameStartKeys.isNotEmpty) {
+          currentGroup.removeWhere((key) => key.atMs == note.atMs);
+        }
+        if (currentGroup.isNotEmpty) {
+          _truncateGroupToNextStart(
+            currentGroup,
+            note.atMs,
+            constraints.marginDurationMs,
+          );
+          groups.add(currentGroup);
+        }
+        currentGroup = <_BatchKey>[...sameStartKeys, note];
+        currentGroupEndMs = _groupEndMs(currentGroup);
         continue;
       }
 
-      _truncateSameKeyOverlap(
-        currentGroup,
-        note,
-        constraints.marginDurationMs,
-      );
+      _truncateSameKeyOverlap(currentGroup, note, constraints.marginDurationMs);
       _avoidHeadTailConnections(
         currentGroup,
         note.atMs,
@@ -191,9 +243,7 @@ class BackendCompiler {
       );
 
       currentGroup.add(note);
-      if (noteEndMs > currentGroupEndMs) {
-        currentGroupEndMs = noteEndMs;
-      }
+      currentGroupEndMs = _groupEndMs(currentGroup);
     }
 
     if (currentGroup.isNotEmpty) {
@@ -208,14 +258,39 @@ class BackendCompiler {
       if (filtered.isEmpty) {
         continue;
       }
-      batches.add(
-        _ActionBatch(
-          atMs: filtered.first.atMs,
-          keys: filtered,
-        ),
-      );
+      batches.add(_ActionBatch(atMs: filtered.first.atMs, keys: filtered));
     }
     return batches;
+  }
+
+  int _groupEndMs(List<_BatchKey> group) {
+    return group
+        .map((key) => key.atMs + key.durationMs)
+        .reduce((a, b) => a > b ? a : b);
+  }
+
+  _BatchKey _gestureBatchKey({
+    required SemanticAction action,
+    required String keyId,
+    required BackendConstraints constraints,
+  }) {
+    final requestedDurationMs = action.durationMsForKey(keyId);
+    final isFallbackTap =
+        requestedDurationMs == null ||
+        requestedDurationMs <= constraints.pressDurationMs;
+    var durationMs = requestedDurationMs ?? 0;
+    if (durationMs < constraints.pressDurationMs) {
+      durationMs = constraints.pressDurationMs;
+    }
+    if (durationMs > constraints.maxGestureDurationMs) {
+      durationMs = constraints.maxGestureDurationMs;
+    }
+    return _BatchKey(
+      keyId: keyId,
+      atMs: action.atMs,
+      durationMs: durationMs,
+      isFallbackTap: isFallbackTap,
+    );
   }
 
   void _truncateGroupToNextStart(
@@ -224,6 +299,12 @@ class BackendCompiler {
     int marginDurationMs,
   ) {
     for (var i = 0; i < group.length; i++) {
+      if (group[i].atMs >= nextStartMs) {
+        continue;
+      }
+      if (group[i].isFallbackTap) {
+        continue;
+      }
       var durationMs = group[i].durationMs;
       final endMs = group[i].atMs + durationMs;
       if (endMs > nextStartMs) {
@@ -249,7 +330,9 @@ class BackendCompiler {
       final currentEndMs = current.atMs + current.durationMs;
       if (currentEndMs > incoming.atMs) {
         final durationMs = incoming.atMs - current.atMs - marginDurationMs;
-        group[i] = current.copyWith(durationMs: durationMs < 0 ? 0 : durationMs);
+        group[i] = current.copyWith(
+          durationMs: durationMs < 0 ? 0 : durationMs,
+        );
       }
     }
   }
@@ -261,10 +344,15 @@ class BackendCompiler {
   ) {
     for (var i = 0; i < group.length; i++) {
       final current = group[i];
+      if (current.isFallbackTap || nextStartMs <= current.atMs) {
+        continue;
+      }
       final currentEndMs = current.atMs + current.durationMs;
       if ((currentEndMs - nextStartMs).abs() < marginDurationMs) {
         final durationMs = nextStartMs - current.atMs - marginDurationMs;
-        group[i] = current.copyWith(durationMs: durationMs < 0 ? 0 : durationMs);
+        group[i] = current.copyWith(
+          durationMs: durationMs < 0 ? 0 : durationMs,
+        );
       }
     }
   }
@@ -345,17 +433,20 @@ class _BatchKey {
     required this.keyId,
     required this.atMs,
     required this.durationMs,
+    this.isFallbackTap = false,
   });
 
   final String keyId;
   final int atMs;
   final int durationMs;
+  final bool isFallbackTap;
 
   _BatchKey copyWith({int? durationMs}) {
     return _BatchKey(
       keyId: keyId,
       atMs: atMs,
       durationMs: durationMs ?? this.durationMs,
+      isFallbackTap: isFallbackTap,
     );
   }
 }
@@ -371,7 +462,7 @@ class _ActionBatch {
           _BatchKey(
             keyId: keyId,
             atMs: action.atMs,
-            durationMs: action.durationMs,
+            durationMs: action.durationMsForKey(keyId) ?? 0,
           ),
       ],
     );
@@ -393,13 +484,17 @@ class _ActionBatch {
     final existingIds = <String>{for (final key in keys) key.keyId};
     for (final keyId in action.keyIds) {
       if (existingIds.contains(keyId)) {
-        continue;
+        return null;
       }
       if (mergedKeys.length >= maxTouches) {
         return null;
       }
       mergedKeys.add(
-        _BatchKey(keyId: keyId, atMs: action.atMs, durationMs: action.durationMs),
+        _BatchKey(
+          keyId: keyId,
+          atMs: action.atMs,
+          durationMs: action.durationMsForKey(keyId) ?? 0,
+        ),
       );
       existingIds.add(keyId);
     }

@@ -13,6 +13,65 @@ import 'models/preview_models.dart';
 import 'providers/preview_provider.dart';
 import 'services/preview_synth.dart';
 
+const _semanticPointPreviewDurationMs = 120;
+
+@visibleForTesting
+Set<String> activeSemanticKeyIdsAt(
+  SemanticPlan plan,
+  int nowMs, {
+  int fallbackDurationMs = _semanticPointPreviewDurationMs,
+}) {
+  final active = <String>{};
+  for (final action in plan.actions) {
+    if (nowMs < action.atMs) {
+      continue;
+    }
+    for (final keyId in action.keyIds) {
+      final keyDurationMs = action.durationMsForKey(keyId);
+      final effectiveDurationMs = keyDurationMs != null && keyDurationMs > 0
+          ? keyDurationMs
+          : fallbackDurationMs;
+      if (nowMs < action.atMs + effectiveDurationMs) {
+        active.add(keyId);
+      }
+    }
+  }
+  return active;
+}
+
+@visibleForTesting
+int semanticPreviewTotalDurationMs(
+  SemanticPlan plan, {
+  int fallbackDurationMs = _semanticPointPreviewDurationMs,
+}) {
+  var totalDurationMs = plan.totalDurationMs;
+  for (final action in plan.actions) {
+    for (final keyId in action.keyIds) {
+      final keyDurationMs = action.durationMsForKey(keyId);
+      final effectiveDurationMs = keyDurationMs != null && keyDurationMs > 0
+          ? keyDurationMs
+          : fallbackDurationMs;
+      totalDurationMs = math.max(
+        totalDurationMs,
+        action.atMs + effectiveDurationMs,
+      );
+    }
+  }
+  return totalDurationMs;
+}
+
+@visibleForTesting
+int previewTotalDurationMs(
+  SemanticPlan plan,
+  Iterable<PreviewLaneNote> laneNotes,
+) {
+  var totalDurationMs = semanticPreviewTotalDurationMs(plan);
+  for (final note in laneNotes) {
+    totalDurationMs = math.max(totalDurationMs, note.startMs + note.durationMs);
+  }
+  return totalDurationMs;
+}
+
 class PreviewScreen extends ConsumerStatefulWidget {
   const PreviewScreen({super.key});
 
@@ -103,6 +162,10 @@ class _PreviewScreenState extends ConsumerState<PreviewScreen> {
           _syncSession(session);
           final geometry = ref.watch(previewGeometryProvider(session.layout));
           final laneNotes = ref.watch(previewLaneNotesProvider(session));
+          final totalDurationMs = previewTotalDurationMs(
+            session.semanticPlan,
+            laneNotes,
+          );
           final activeKeyIds = _activeKeyIdsFor(
             session: session,
             nowMs: _positionMs,
@@ -127,7 +190,7 @@ class _PreviewScreenState extends ConsumerState<PreviewScreen> {
               final compactSpacing = 8.0;
               final keyboardHeight = _isFullscreen
                   ? (constraints.maxHeight *
-                          _bottomPanelFraction.clamp(0.18, 0.62))
+                            _bottomPanelFraction.clamp(0.18, 0.62))
                         .toDouble()
                   : 164.0;
 
@@ -138,6 +201,7 @@ class _PreviewScreenState extends ConsumerState<PreviewScreen> {
                     _PreviewHeader(
                       compact: _isFullscreen,
                       session: session,
+                      totalDurationMs: totalDurationMs,
                       positionMs: _positionMs,
                       isPlaying: _isPlaying,
                       isFullscreen: _isFullscreen,
@@ -358,6 +422,10 @@ class _PreviewScreenState extends ConsumerState<PreviewScreen> {
       _playStartedAt = DateTime.now();
     });
     _scheduleNotes(laneNotes, fromPositionMs: _positionMs);
+    final totalDurationMs = previewTotalDurationMs(
+      session.semanticPlan,
+      laneNotes,
+    );
     _ticker = Timer.periodic(_playTick, (_) {
       if (!mounted || _playStartedAt == null) {
         return;
@@ -367,9 +435,9 @@ class _PreviewScreenState extends ConsumerState<PreviewScreen> {
           .difference(_playStartedAt!)
           .inMilliseconds;
       final nextPosition = _playbackOriginMs + (elapsedMs * _speed).round();
-      if (nextPosition >= session.semanticPlan.totalDurationMs) {
+      if (nextPosition >= totalDurationMs) {
         setState(() {
-          _positionMs = session.semanticPlan.totalDurationMs;
+          _positionMs = totalDurationMs;
         });
         _stopPlayback(resetToStart: false);
         return;
@@ -423,10 +491,11 @@ class _PreviewScreenState extends ConsumerState<PreviewScreen> {
     required List<PreviewLaneNote> laneNotes,
     required double value,
   }) {
-    final nextPosition = value.round().clamp(
-      0,
-      session.semanticPlan.totalDurationMs,
+    final totalDurationMs = previewTotalDurationMs(
+      session.semanticPlan,
+      laneNotes,
     );
+    final nextPosition = value.round().clamp(0, totalDurationMs);
     if (!_isPlaying) {
       setState(() {
         _positionMs = nextPosition;
@@ -537,13 +606,7 @@ class _PreviewScreenState extends ConsumerState<PreviewScreen> {
     required PreviewSessionData session,
     required int nowMs,
   }) {
-    final active = <String>{};
-    for (final action in session.semanticPlan.actions) {
-      final duration = action.durationMs > 0 ? action.durationMs : 120;
-      if (nowMs < action.atMs) continue;
-      if (nowMs > action.atMs + duration) continue;
-      active.addAll(action.keyIds);
-    }
+    final active = activeSemanticKeyIdsAt(session.semanticPlan, nowMs);
     _pruneManualHighlights();
     active.addAll(_manualHighlights.keys);
     active.addAll(_heldManualKeyIds);
@@ -573,6 +636,7 @@ class _PreviewHeader extends StatelessWidget {
   const _PreviewHeader({
     required this.compact,
     required this.session,
+    required this.totalDurationMs,
     required this.positionMs,
     required this.isPlaying,
     required this.isFullscreen,
@@ -591,6 +655,7 @@ class _PreviewHeader extends StatelessWidget {
 
   final bool compact;
   final PreviewSessionData session;
+  final int totalDurationMs;
   final int positionMs;
   final bool isPlaying;
   final bool isFullscreen;
@@ -608,7 +673,7 @@ class _PreviewHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final totalMs = math.max(1, session.semanticPlan.totalDurationMs);
+    final totalMs = math.max(1, totalDurationMs);
     final labelStyle = Theme.of(context).textTheme.bodySmall?.copyWith(
       color: Theme.of(context).colorScheme.onSurfaceVariant,
     );
