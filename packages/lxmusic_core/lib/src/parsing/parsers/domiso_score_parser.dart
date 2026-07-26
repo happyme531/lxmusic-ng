@@ -8,16 +8,16 @@ class DoMiSoScoreParser implements ScoreParser {
   @override
   String get formatId => 'domiso';
 
+  static const int _defaultBpm = 80;
   static const List<int> _scaleOffsets = <int>[0, 2, 4, 5, 7, 9, 11];
 
   @override
   Score parse(Uint8List bytes) {
-    final raw = utf8.decode(bytes);
-    final tokens = _tokenize(raw);
-    var bpm = 80;
-    var tickMs = _tickMsFromBpm(bpm);
-    var basePitch = _noteNameToMidiPitch('C4');
-    var currentMs = 0;
+    final document = _splitDocument(utf8.decode(bytes));
+    final tokens = _tokenize(document.body);
+    var bpm = _defaultBpm;
+    var basePitch = _noteNameToMidiPitch('C');
+    var currentMs = 0.0;
     var inChord = false;
     var chordPitches = <int>[];
     var chordLengthTicks = 0.0;
@@ -32,26 +32,40 @@ class DoMiSoScoreParser implements ScoreParser {
       }
       if (token == ')') {
         for (final pitch in chordPitches) {
-          notes.add(NoteEvent(pitch: pitch, startMs: currentMs));
+          notes.add(NoteEvent(pitch: pitch, startMs: currentMs.round()));
         }
-        currentMs += (chordLengthTicks * tickMs).round();
+        currentMs += _ticksToMs(chordLengthTicks, bpm);
+        chordPitches = <int>[];
+        chordLengthTicks = 0;
         inChord = false;
         continue;
       }
 
       if (token.contains('=')) {
-        final parts = token.split('=');
-        if (parts.length != 2) {
+        final separatorIndex = token.indexOf('=');
+        final command = token.substring(0, separatorIndex);
+        final argument = token.substring(separatorIndex + 1);
+        if (command.isEmpty) {
           throw FormatException('Invalid command token: $token');
         }
-        if (parts[0] == 'bpm') {
-          bpm = int.parse(parts[1]);
-          tickMs = _tickMsFromBpm(bpm);
-        } else if (parts[0] == '1') {
-          basePitch = _noteNameToMidiPitch(parts[1]);
-        } else {
-          throw FormatException('Unsupported command: $token');
+        switch (command) {
+          case 'bpm':
+            bpm = _normalizeBpm(int.parse(argument));
+          case '1':
+            basePitch = _noteNameToMidiPitch(argument);
+          case 'rollback':
+            // Kept as a compatibility no-op. The legacy parser only warned
+            // because rollback was never implemented there either.
+            break;
+          default:
+            throw FormatException('Unsupported command: $token');
         }
+        continue;
+      }
+
+      // Legacy DoMiSo files may contain free-form text outside the optional
+      // header. The old parser ignored tokens that did not look like notes.
+      if (!RegExp(r'[0-7]').hasMatch(token)) {
         continue;
       }
 
@@ -65,16 +79,33 @@ class DoMiSoScoreParser implements ScoreParser {
         }
       } else {
         if (parsed.pitch >= 0) {
-          notes.add(NoteEvent(pitch: parsed.pitch, startMs: currentMs));
+          notes.add(NoteEvent(pitch: parsed.pitch, startMs: currentMs.round()));
         }
-        currentMs += (parsed.lengthTicks * tickMs).round();
+        currentMs += _ticksToMs(parsed.lengthTicks, bpm);
       }
     }
 
     return Score(
       tracks: <Track>[Track(name: 'DoMiSo', channel: 0, notes: notes)],
       format: SourceFormat.domiso,
-      metadata: <String, Object?>{'bpm': bpm},
+      metadata: <String, Object?>{
+        'source': formatId,
+        'bpm': bpm,
+        if (document.comment.isNotEmpty) 'comment': document.comment,
+      },
+    );
+  }
+
+  ({String comment, String body}) _splitDocument(String raw) {
+    final normalized = raw.startsWith('\uFEFF') ? raw.substring(1) : raw;
+    final lines = LineSplitter.split(normalized).toList();
+    final separatorIndex = lines.indexWhere((line) => line.contains('=='));
+    if (separatorIndex < 0) {
+      return (comment: '', body: normalized);
+    }
+    return (
+      comment: lines.take(separatorIndex).join('\n').trim(),
+      body: lines.skip(separatorIndex + 1).join('\n'),
     );
   }
 
@@ -122,35 +153,31 @@ class DoMiSoScoreParser implements ScoreParser {
   }
 
   double _parseLengthTicks(String token) {
-    if (token.isEmpty) {
-      return 1;
-    }
-    var length = 1.0;
+    final segments = <double>[1];
     for (final rune in token.runes) {
       final ch = String.fromCharCode(rune);
       if (ch == '.') {
-        length += length / 2;
+        segments.add(segments.last / 2);
       } else if (ch == '-') {
-        length += 1;
+        segments.add(1);
       } else if (ch == '/') {
-        length /= 2;
+        segments[segments.length - 1] /= 2;
       } else {
         throw FormatException('Invalid timing token: $token');
       }
     }
-    return length;
+    return segments.fold<double>(0, (sum, segment) => sum + segment);
   }
 
-  int _tickMsFromBpm(int bpm) {
-    if (bpm <= 0 || bpm > 480) {
-      return 750;
-    }
-    return (60000 / bpm).round();
-  }
+  int _normalizeBpm(int bpm) => bpm >= 1 && bpm <= 480 ? bpm : _defaultBpm;
+
+  double _ticksToMs(double ticks, int bpm) => ticks * 60000 / bpm;
 
   int _noteNameToMidiPitch(String name) {
-    final normalized = name.trim().toUpperCase();
-    final match = RegExp(r'^([A-G])([0-9])([#]?)$').firstMatch(normalized);
+    final normalized = name.trim();
+    final match = RegExp(
+      r'^([A-Ga-g])(?:(\d)([#b]?)|([#b])(\d)?)?$',
+    ).firstMatch(normalized);
     if (match == null) {
       throw FormatException('Invalid note name: $name');
     }
@@ -163,9 +190,18 @@ class DoMiSoScoreParser implements ScoreParser {
       'A': 9,
       'B': 11,
     };
-    final letter = match.group(1)!;
-    final octave = int.parse(match.group(2)!);
-    final accidental = match.group(3)! == '#' ? 1 : 0;
+    final letter = match.group(1)!.toUpperCase();
+    final octaveText = match.group(2) ?? match.group(5);
+    final octave = octaveText == null ? 4 : int.parse(octaveText);
+    final suffixAccidental = match.group(3) ?? '';
+    final accidentalText = suffixAccidental.isNotEmpty
+        ? suffixAccidental
+        : (match.group(4) ?? '');
+    final accidental = accidentalText == '#'
+        ? 1
+        : accidentalText == 'b'
+        ? -1
+        : 0;
     return pitchMap[letter]! + accidental + (octave + 1) * 12;
   }
 }
