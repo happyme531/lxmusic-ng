@@ -24,6 +24,56 @@ const _topLevelConfigKeys = <String>{
   'pipeline',
 };
 
+const _inputFormatIds = <String>[
+  'domiso',
+  'json-score',
+  'midi',
+  'skystudio-json',
+  'tonejs-json',
+];
+
+const _outputFormatIds = <String>[
+  'json',
+  'score-json',
+  'semantic-plan-json',
+  'executable-plan-json',
+  'midi',
+];
+
+const _transformStepTypes = <String>[
+  'mergeTracks',
+  'removeEmptyTracks',
+  'pitchOffset',
+  'legalizeTargetNoteRange',
+  'noteToKey',
+  'bindLyrics',
+  'storeCurrentNoteTime',
+  'mergeNearbyNotes',
+  'foldFrequentSameNote',
+  'estimateNoteDuration',
+  'splitLongNote',
+  'speedChange',
+  'limitBlankDuration',
+  'skipIntro',
+  'singleKeyFrequencyLimit',
+  'noteFrequencySoftLimit',
+  'chordNoteCountLimit',
+  'humanify',
+];
+
+const _exitUsage = 64;
+const _exitDataError = 65;
+const _exitNoInput = 66;
+const _exitSoftware = 70;
+const _exitCannotCreate = 73;
+
+class _CliFailure implements Exception {
+  const _CliFailure(this.message, {required this.exitCode});
+
+  final String message;
+  final int exitCode;
+}
+
 void main(List<String> arguments) async {
   final parser = ArgParser(allowTrailingOptions: true)
     ..addFlag('help', abbr: 'h', negatable: false, help: '显示帮助')
@@ -67,7 +117,12 @@ void main(List<String> arguments) async {
   parser.commands['analyze']!
     ..addFlag('help', abbr: 'h', negatable: false, help: '显示帮助')
     ..addOption('input', abbr: 'i', mandatory: true)
-    ..addOption('format', abbr: 'f', help: '输入格式；省略时按输入文件后缀推断。')
+    ..addOption(
+      'format',
+      abbr: 'f',
+      allowed: _inputFormatIds,
+      help: '输入格式；省略时按输入文件后缀推断。',
+    )
     ..addOption('profile', mandatory: true)
     ..addOption('layout')
     ..addOption('variant', defaultsTo: 'default')
@@ -88,26 +143,28 @@ void main(List<String> arguments) async {
   parser.commands['convert']!
     ..addFlag('help', abbr: 'h', negatable: false, help: '显示帮助')
     ..addOption('input', abbr: 'i', mandatory: true)
-    ..addMultiOption(
+    ..addOption(
       'format',
       abbr: 'f',
-      help:
-          '-f/--format before --input sets input format; -f after the input '
-          'path sets output format. Two -f before --input: input then output. '
-          'Omit to infer from suffixes (楚留香音乐盒 src/musicFormats.js; plus '
-          '.score.json→json-score).',
+      allowed: _inputFormatIds,
+      help: '输入格式；省略时按输入文件后缀推断，与参数位置无关。',
     )
-    ..addOption('profile', mandatory: true)
+    ..addOption('profile', help: '分析或 pipeline-only config 使用的目标 profile。')
     ..addOption('layout')
-    ..addOption('variant', defaultsTo: 'default')
+    ..addOption('variant', help: '目标 variant；需要 CLI 目标时默认 default。')
     ..addOption(
       'track-disable-threshold',
       defaultsTo: '0.5',
       help: '多音轨自动推荐选轨阈值，范围 0-1；默认 0.5。',
     )
-    ..addOption('config')
-    ..addFlag('analyze', negatable: false)
-    ..addOption('output')
+    ..addOption(
+      'config',
+      help:
+          '完整 conversion config，或仅含 steps/pipeline.steps 的 pipeline '
+          'config；后者从 CLI 读取目标。',
+    )
+    ..addFlag('analyze', negatable: false, help: '显式重新分析；不能与 --config 同时使用。')
+    ..addOption('output', help: '输出路径；也可作为唯一尾随参数传入。')
     ..addMultiOption(
       'option',
       abbr: 'o',
@@ -117,11 +174,20 @@ void main(List<String> arguments) async {
     )
     ..addOption(
       'output-format',
-      help:
-          'Overrides output format; otherwise inferred from the second -f or '
-          'from the output path suffix (.mid→midi, .json→json).',
+      allowed: _outputFormatIds,
+      help: '输出格式；省略时按输出路径后缀推断，否则默认 json。',
     )
-    ..addOption('backend', defaultsTo: 'preview');
+    ..addOption('backend', defaultsTo: 'preview')
+    ..addOption(
+      'device',
+      defaultsTo: 'sample-device',
+      help: 'executable plan 使用的 calibration device id。',
+    )
+    ..addOption(
+      'orientation',
+      defaultsTo: 'portrait',
+      help: 'executable plan 使用的 calibration orientation。',
+    );
 
   ArgResults result;
   try {
@@ -130,11 +196,11 @@ void main(List<String> arguments) async {
     stderr.writeln('[lxmusic] ${error.message}');
     final commandName = _extractCommandName(arguments, parser);
     if (commandName != null) {
-      _printCommandUsage(commandName, parser.commands[commandName]!);
+      _printCommandUsage(commandName, parser.commands[commandName]!, stderr);
     } else {
-      _printUsage(parser);
+      _printUsage(parser, stderr);
     }
-    exitCode = 64;
+    exitCode = _exitUsage;
     return;
   }
 
@@ -145,7 +211,7 @@ void main(List<String> arguments) async {
   final command = result.command;
   if (command == null) {
     _printUsage(parser);
-    exitCode = 64;
+    exitCode = _exitUsage;
     return;
   }
   if ((command['help'] as bool?) ?? false) {
@@ -171,18 +237,45 @@ void main(List<String> arguments) async {
         _runInspect(command);
         return;
       case 'analyze':
-        _runAnalyze(command, arguments);
+        _runAnalyze(command);
         return;
       case 'convert':
-        await _runConvert(command, arguments);
+        await _runConvert(command);
         return;
     }
-  } on ArgumentError catch (error) {
+  } on _CliFailure catch (error) {
     stderr.writeln('[lxmusic] ${error.message}');
+    exitCode = error.exitCode;
+  } on ArgumentError catch (error) {
+    stderr.writeln('[lxmusic] ${_errorMessage(error)}');
     _printCommandUsage(command.name!, parser.commands[command.name]!, stderr);
-    exitCode = 64;
-    return;
+    exitCode = _exitUsage;
+  } on FileSystemException catch (error) {
+    stderr.writeln('[lxmusic] ${_fileSystemErrorMessage(error)}');
+    exitCode = _exitNoInput;
+  } on FormatException catch (error) {
+    stderr.writeln('[lxmusic] Invalid input data: ${error.message}');
+    exitCode = _exitDataError;
+  } on TypeError catch (error) {
+    stderr.writeln('[lxmusic] Invalid input or config shape: $error');
+    exitCode = _exitDataError;
+  } on StateError catch (error) {
+    stderr.writeln('[lxmusic] Invalid input or config state: ${error.message}');
+    exitCode = _exitDataError;
+  } catch (error) {
+    stderr.writeln('[lxmusic] Internal error: $error');
+    exitCode = _exitSoftware;
   }
+}
+
+String _errorMessage(ArgumentError error) {
+  return error.message?.toString() ?? error.toString();
+}
+
+String _fileSystemErrorMessage(FileSystemException error) {
+  final path = error.path;
+  final detail = error.osError?.message ?? error.message;
+  return path == null || path.isEmpty ? detail : '$detail: $path';
 }
 
 void _runListFormats() {
@@ -191,28 +284,7 @@ void _runListFormats() {
 }
 
 void _runListPasses() {
-  stdout.writeln(
-    prettyJson(<String>[
-      'mergeTracks',
-      'removeEmptyTracks',
-      'pitchOffset',
-      'legalizeTargetNoteRange',
-      'noteToKey',
-      'bindLyrics',
-      'storeCurrentNoteTime',
-      'mergeNearbyNotes',
-      'foldFrequentSameNote',
-      'estimateNoteDuration',
-      'splitLongNote',
-      'speedChange',
-      'limitBlankDuration',
-      'skipIntro',
-      'singleKeyFrequencyLimit',
-      'noteFrequencySoftLimit',
-      'chordNoteCountLimit',
-      'humanify',
-    ]),
-  );
+  stdout.writeln(prettyJson(_transformStepTypes));
 }
 
 void _runListProfiles(ArgResults command) {
@@ -267,15 +339,13 @@ void _runInspect(ArgResults command) {
   stdout.writeln(prettyJson(profile.toJson()));
 }
 
-void _runAnalyze(ArgResults command, List<String> argv) {
-  final inputFormat = _resolveAnalyzeInputFormat(command, argv);
+void _runAnalyze(ArgResults command) {
+  final inputFormat = _resolveInputFormat(command);
   final analysis = _analyzeInput(command, inputFormatId: inputFormat);
   final outputPath = command['output'] as String?;
   if (outputPath != null && outputPath.isNotEmpty) {
-    File(
-      outputPath,
-    ).writeAsStringSync(_encodeConversionConfigYaml(analysis.config));
-    stdout.writeln('[lxmusic] wrote conversion config to $outputPath');
+    _writeTextFile(outputPath, _encodeConversionConfigYaml(analysis.config));
+    stderr.writeln('[lxmusic] wrote conversion config to $outputPath');
   }
   stdout.writeln(
     prettyJson(<String, Object?>{
@@ -285,27 +355,27 @@ void _runAnalyze(ArgResults command, List<String> argv) {
   );
 }
 
-Future<void> _runConvert(ArgResults command, List<String> argv) async {
+Future<void> _runConvert(ArgResults command) async {
   final assets = bundledYamlAssetBundle;
   final calibrationRepo = YamlCalibrationRepository(assets);
   final registry = _registry();
-  final explicitFormats = _parseConvertFormatsFromArgv(argv);
-  final inputFormat = _resolveConvertInputFormat(command, explicitFormats);
+  final inputFormat = _resolveInputFormat(command);
   final outputPath = _resolveConvertOutputPath(command);
   final inputFile = File(command['input'] as String);
   final score = registry.parse(
     bytes: inputFile.readAsBytesSync(),
     formatId: inputFormat,
   );
-  stdout.writeln(
+  stderr.writeln(
     '[lxmusic] parsed score: ${score.tracks.length} track(s), '
     '${score.totalNoteCount} note(s), ${score.totalDurationMs} ms',
   );
 
-  final configPath = command['config'] as String?;
-  final config = ((command['analyze'] as bool) || configPath == null)
-      ? _analyzeInput(command, inputFormatId: inputFormat).config
-      : _loadConversionConfig(configPath);
+  final config = _resolveConversionConfig(
+    command,
+    inputFormatId: inputFormat,
+    assets: assets,
+  );
   final configOverrides = _commandOptions(command);
   _applyConfigOverrides(config, configOverrides);
   final target = _resolveTargetFromConfig(config, assets);
@@ -320,11 +390,11 @@ Future<void> _runConvert(ArgResults command, List<String> argv) async {
   final transformSteps = _transformStepsFromConfig(config);
   final transformed = TransformPipeline(transformSteps).run(score);
   final ns = transformed.report.noteSummary!;
-  stdout.writeln(
+  stderr.writeln(
     '[lxmusic] converted score: ${transformed.score.tracks.length} track(s), '
     'steps=${transformed.report.stats.length}',
   );
-  stdout.writeln(
+  stderr.writeln(
     '[lxmusic] pipeline notes: in=${ns.inputNoteCount} out=${ns.outputNoteCount} '
     'added=${ns.pipelineNotesAdded} removed=${ns.pipelineNotesRemoved}',
   );
@@ -355,19 +425,17 @@ Future<void> _runConvert(ArgResults command, List<String> argv) async {
     'semanticPlan': semanticPlan.toJson(),
   };
 
-  final outputFormat = _resolveConvertOutputFormat(
-    command,
-    outputPath,
-    explicitFormats,
-  );
+  final outputFormat = _resolveConvertOutputFormat(command, outputPath);
 
   if (outputFormat == 'executable-plan-json') {
+    final deviceId = command['device'] as String;
+    final orientation = command['orientation'] as String;
     final calibration = calibrationRepo.load(
       CalibrationKey(
         profileId: target.profile.id,
         layoutId: target.layout.id,
-        deviceId: 'sample-device',
-        orientation: 'portrait',
+        deviceId: deviceId,
+        orientation: orientation,
       ),
     );
     final executablePlan = const BackendCompiler().compile(
@@ -391,6 +459,16 @@ Future<void> _runConvert(ArgResults command, List<String> argv) async {
       ),
     );
     result['executablePlan'] = executablePlan.toJson();
+    if (calibration == null ||
+        executablePlan.actions.any(
+          (action) => action.kind == ExecutableActionKind.overlayHint,
+        )) {
+      stderr.writeln(
+        '[lxmusic] warning: no executable calibration for '
+        '${target.profile.id}/${target.layout.id}/$deviceId/$orientation; '
+        'the plan contains overlayHint fallback and is not directly executable.',
+      );
+    }
   }
 
   switch (outputFormat) {
@@ -427,54 +505,18 @@ Future<void> _runConvert(ArgResults command, List<String> argv) async {
       if (outputPath == null || outputPath.isEmpty) {
         throw ArgumentError('output-format midi requires --output.');
       }
-      File(
+      _writeBytesFile(
         outputPath,
-      ).writeAsBytesSync(const MidiScoreEncoder().encode(transformed.score));
-      stdout.writeln('[lxmusic] wrote midi output to $outputPath');
+        const MidiScoreEncoder().encode(transformed.score),
+      );
+      stderr.writeln('[lxmusic] wrote midi output to $outputPath');
       return;
     default:
       throw ArgumentError('Unsupported output format "$outputFormat".');
   }
 }
 
-/// Parses `-f` / `--format` relative to `--input` (argv order). See
-/// [addMultiOption] help on `convert`.
-({String? input, String? output}) _parseConvertFormatsFromArgv(
-  List<String> argv,
-) {
-  final sub = _argsAfterSubcommand(argv, 'convert');
-  if (sub == null) {
-    return (input: null, output: null);
-  }
-  final sep = _indexOfInputOption(sub);
-  if (sep == null) {
-    return (input: null, output: null);
-  }
-  final before = sub.sublist(0, sep.optionIndex);
-  final after = sub.sublist(sep.afterInputIndex);
-
-  final bf = _collectFormatOptionValues(before);
-  final af = _collectFormatOptionValues(after);
-
-  if (bf.length >= 2 && af.isEmpty) {
-    return (input: bf[0], output: bf[1]);
-  }
-  if (bf.length == 1 && af.isEmpty) {
-    return (input: bf[0], output: null);
-  }
-  if (bf.isEmpty && af.isNotEmpty) {
-    return (input: null, output: af[0]);
-  }
-  if (bf.length == 1 && af.isNotEmpty) {
-    return (input: bf[0], output: af[0]);
-  }
-  if (bf.length >= 2 && af.isNotEmpty) {
-    return (input: bf[0], output: af[0]);
-  }
-  return (input: null, output: null);
-}
-
-String _resolveAnalyzeInputFormat(ArgResults command, List<String> argv) {
+String _resolveInputFormat(ArgResults command) {
   final explicit = command['format'] as String?;
   if (explicit != null && explicit.isNotEmpty) {
     return explicit;
@@ -487,71 +529,6 @@ String _resolveAnalyzeInputFormat(ArgResults command, List<String> argv) {
   throw ArgumentError(
     'Cannot infer input format from "$path". '
     'Specify with -f / --format (e.g. -f tonejs-json).',
-  );
-}
-
-List<String>? _argsAfterSubcommand(List<String> argv, String name) {
-  final i = argv.indexOf(name);
-  if (i < 0) {
-    return null;
-  }
-  return argv.sublist(i + 1);
-}
-
-({int optionIndex, int afterInputIndex})? _indexOfInputOption(
-  List<String> sub,
-) {
-  for (var i = 0; i < sub.length; i++) {
-    final t = sub[i];
-    if (t == '--input' || t == '-i') {
-      if (i + 1 >= sub.length) {
-        throw ArgumentError('--input/-i requires a path.');
-      }
-      return (optionIndex: i, afterInputIndex: i + 2);
-    }
-    if (t.startsWith('--input=')) {
-      return (optionIndex: i, afterInputIndex: i + 1);
-    }
-  }
-  return null;
-}
-
-List<String> _collectFormatOptionValues(List<String> segment) {
-  final out = <String>[];
-  for (var i = 0; i < segment.length; i++) {
-    final t = segment[i];
-    if (t == '-f' || t == '--format') {
-      if (i + 1 < segment.length) {
-        out.add(segment[i + 1]);
-        i++;
-      }
-    } else if (t.startsWith('--format=')) {
-      final v = t.substring('--format='.length);
-      if (v.isNotEmpty) {
-        out.add(v);
-      }
-    }
-  }
-  return out;
-}
-
-/// Longest-suffix rules aligned with [楚留香音乐盒/src/musicFormats.js], plus
-/// `.score.json` → json-score for this repo’s examples.
-String _resolveConvertInputFormat(
-  ArgResults command,
-  ({String? input, String? output}) explicit,
-) {
-  if (explicit.input != null && explicit.input!.isNotEmpty) {
-    return explicit.input!;
-  }
-  final path = command['input'] as String;
-  final inferred = _inferInputFormatFromPath(path);
-  if (inferred != null) {
-    return inferred;
-  }
-  throw ArgumentError(
-    'Cannot infer input format from "$path". '
-    'Specify with -f / --format before --input (e.g. -f tonejs-json).',
   );
 }
 
@@ -573,17 +550,10 @@ String? _resolveConvertOutputPath(ArgResults command) {
   return rest.single;
 }
 
-String _resolveConvertOutputFormat(
-  ArgResults command,
-  String? outputPath,
-  ({String? input, String? output}) explicit,
-) {
+String _resolveConvertOutputFormat(ArgResults command, String? outputPath) {
   final cli = command['output-format'] as String?;
   if (cli != null && cli.isNotEmpty) {
     return cli;
-  }
-  if (explicit.output != null && explicit.output!.isNotEmpty) {
-    return explicit.output!;
   }
   if (outputPath != null && outputPath.isNotEmpty) {
     final inferred = _inferOutputFormatFromPath(outputPath);
@@ -692,7 +662,7 @@ void _printCommandUsage(String commandName, ArgParser parser, [IOSink? sink]) {
           '--input <file> --profile <profile> [options]',
     'convert' =>
       '  dart run apps/lxmusic_cli/bin/lxmusic_cli.dart convert '
-          '--input <file> --profile <profile> [options]',
+          '--input <file> [--config <file>] [--profile <profile>] [options]',
     'inspect-profile' =>
       '  dart run apps/lxmusic_cli/bin/lxmusic_cli.dart inspect-profile '
           '--profile <profile> [options]',
@@ -889,7 +859,11 @@ Object? _parseOptionValue(String raw) {
   }
   if ((raw.startsWith('{') && raw.endsWith('}')) ||
       (raw.startsWith('[') && raw.endsWith(']'))) {
-    return jsonDecode(raw);
+    try {
+      return jsonDecode(raw);
+    } on FormatException catch (error) {
+      throw ArgumentError('Invalid JSON option value: ${error.message}');
+    }
   }
   return raw;
 }
@@ -959,6 +933,106 @@ void _setPipelineStepConfigValue(
   _setNestedConfigValue(stepConfig, path, value);
 }
 
+Map<String, Object?> _resolveConversionConfig(
+  ArgResults command, {
+  required String inputFormatId,
+  required YamlAssetBundle assets,
+}) {
+  final configPath = command['config'] as String?;
+  if (configPath == null || configPath.isEmpty) {
+    return _analyzeInput(command, inputFormatId: inputFormatId).config;
+  }
+  if (command['analyze'] as bool) {
+    throw ArgumentError(
+      '--analyze and --config are mutually exclusive. Remove --config to '
+      'generate a fresh configuration.',
+    );
+  }
+
+  return _normalizeLoadedConversionConfig(
+    _loadConversionConfig(configPath),
+    command: command,
+    assets: assets,
+  );
+}
+
+Map<String, Object?> _normalizeLoadedConversionConfig(
+  Map<String, Object?> loaded, {
+  required ArgResults command,
+  required YamlAssetBundle assets,
+}) {
+  final config = Map<String, Object?>.from(loaded);
+  final rawPipeline = config['pipeline'];
+  if (rawPipeline != null && config.containsKey('steps')) {
+    throw const _CliFailure(
+      'Conversion config cannot contain both "pipeline" and top-level "steps".',
+      exitCode: _exitDataError,
+    );
+  }
+  if (rawPipeline == null && config.containsKey('steps')) {
+    config['pipeline'] = <String, Object?>{'steps': config.remove('steps')};
+  } else if (rawPipeline is Map) {
+    config['pipeline'] = Map<String, Object?>.from(rawPipeline);
+  } else if (rawPipeline == null) {
+    throw const _CliFailure(
+      'Conversion config must contain pipeline.steps or top-level steps.',
+      exitCode: _exitDataError,
+    );
+  } else {
+    throw const _CliFailure(
+      'Conversion config field "pipeline" must be a mapping.',
+      exitCode: _exitDataError,
+    );
+  }
+
+  // Validate the pipeline shape before resolving or refreshing target data.
+  _transformStepsFromConfig(config);
+
+  if (config['target'] == null) {
+    final target = _resolveAnalysisTargetFromArgs(command);
+    config['target'] = <String, Object?>{
+      'profileId': target.profile.id,
+      'variantId': target.variant.id,
+      'layoutId': target.layout.id,
+    };
+  } else {
+    final target = _resolveTargetFromConfig(config, assets);
+    _validateExplicitTargetArgs(command, target);
+    if (command.wasParsed('track-disable-threshold')) {
+      throw ArgumentError(
+        '--track-disable-threshold only applies when generating a fresh '
+        'analysis config.',
+      );
+    }
+  }
+
+  config['version'] ??= variantMappingSemanticsVersion;
+  return config;
+}
+
+void _validateExplicitTargetArgs(
+  ArgResults command,
+  ({GameProfile profile, InstrumentVariant variant, KeyLayout layout}) target,
+) {
+  final expected = <String, String>{
+    'profile': target.profile.id,
+    'variant': target.variant.id,
+    'layout': target.layout.id,
+  };
+  for (final entry in expected.entries) {
+    if (!command.wasParsed(entry.key)) {
+      continue;
+    }
+    final actual = command[entry.key] as String?;
+    if (actual != entry.value) {
+      throw ArgumentError(
+        '--${entry.key}=$actual conflicts with config target '
+        '${entry.key}=${entry.value}.',
+      );
+    }
+  }
+}
+
 ({Map<String, Object?> analysis, Map<String, Object?> config}) _analyzeInput(
   ArgResults command, {
   required String inputFormatId,
@@ -1010,8 +1084,14 @@ AnalysisTarget _resolveAnalysisTargetFromArgs(ArgResults command) {
   final assets = bundledYamlAssetBundle;
   final profileRepo = YamlGameProfileRepository(assets);
   final layoutRepo = YamlLayoutRepository(assets);
-  final profile = profileRepo.load(command['profile'] as String);
-  final variantId = command['variant'] as String;
+  final profileId = command['profile'] as String?;
+  if (profileId == null || profileId.isEmpty) {
+    throw ArgumentError(
+      '--profile is required when analyzing or using a pipeline-only config.',
+    );
+  }
+  final profile = profileRepo.load(profileId);
+  final variantId = command['variant'] as String? ?? 'default';
   final variant = profile.variantById(variantId);
   if (variant == null) {
     throw ArgumentError(
@@ -1030,32 +1110,106 @@ AnalysisTarget _resolveAnalysisTargetFromArgs(ArgResults command) {
 _resolveTargetFromConfig(Map<String, Object?> config, YamlAssetBundle assets) {
   final profileRepo = YamlGameProfileRepository(assets);
   final layoutRepo = YamlLayoutRepository(assets);
-  final target = Map<String, Object?>.from(config['target'] as Map);
-  final profile = profileRepo.load(target['profileId'] as String);
-  final variantId = target['variantId'] as String;
-  final variant = profile.variantById(variantId);
-  if (variant == null) {
-    throw ArgumentError(
-      'Variant "$variantId" not found in profile ${profile.id}.',
+  final rawTarget = config['target'];
+  if (rawTarget is! Map) {
+    throw const _CliFailure(
+      'Conversion config field "target" must be a mapping.',
+      exitCode: _exitDataError,
     );
   }
-  final layout = layoutRepo.load(target['layoutId'] as String);
-  return (profile: profile, variant: variant, layout: layout);
+  final target = Map<String, Object?>.from(rawTarget);
+  final profileId = target['profileId'];
+  final variantId = target['variantId'];
+  final layoutId = target['layoutId'];
+  if (profileId is! String ||
+      profileId.isEmpty ||
+      variantId is! String ||
+      variantId.isEmpty ||
+      layoutId is! String ||
+      layoutId.isEmpty) {
+    throw const _CliFailure(
+      'Conversion config target requires non-empty profileId, variantId, '
+      'and layoutId strings.',
+      exitCode: _exitDataError,
+    );
+  }
+
+  try {
+    final profile = profileRepo.load(profileId);
+    final variant = profile.variantById(variantId);
+    if (variant == null) {
+      throw ArgumentError(
+        'Variant "$variantId" not found in profile ${profile.id}.',
+      );
+    }
+    final layout = layoutRepo.load(layoutId);
+    return (profile: profile, variant: variant, layout: layout);
+  } on ArgumentError catch (error) {
+    throw _CliFailure(
+      'Invalid conversion config target: ${_errorMessage(error)}',
+      exitCode: _exitDataError,
+    );
+  }
 }
 
 List<TransformStep> _transformStepsFromConfig(Map<String, Object?> config) {
-  final pipeline = Map<String, Object?>.from(config['pipeline'] as Map);
-  return (pipeline['steps'] as List<Object?>? ?? const <Object?>[])
-      .map((step) => Map<String, Object?>.from(step! as Map))
-      .map(
-        (step) => TransformStep(
-          type: step['type'] as String,
-          config: Map<String, Object?>.from(
-            step['config'] as Map? ?? const <String, Object?>{},
-          ),
+  final rawPipeline = config['pipeline'];
+  if (rawPipeline is! Map) {
+    throw const _CliFailure(
+      'Conversion config field "pipeline" must be a mapping.',
+      exitCode: _exitDataError,
+    );
+  }
+  final pipeline = Map<String, Object?>.from(rawPipeline);
+  final rawSteps = pipeline['steps'];
+  if (rawSteps is! List) {
+    throw const _CliFailure(
+      'Conversion config field "pipeline.steps" must be a list.',
+      exitCode: _exitDataError,
+    );
+  }
+
+  final steps = <TransformStep>[];
+  for (var index = 0; index < rawSteps.length; index++) {
+    final rawStep = rawSteps[index];
+    if (rawStep is! Map) {
+      throw _CliFailure(
+        'Conversion config pipeline.steps[$index] must be a mapping.',
+        exitCode: _exitDataError,
+      );
+    }
+    final step = Map<String, Object?>.from(rawStep);
+    final type = step['type'];
+    final rawConfig = step['config'];
+    if (type is! String || type.isEmpty) {
+      throw _CliFailure(
+        'Conversion config pipeline.steps[$index].type must be a '
+        'non-empty string.',
+        exitCode: _exitDataError,
+      );
+    }
+    if (!_transformStepTypes.contains(type)) {
+      throw _CliFailure(
+        'Conversion config pipeline.steps[$index] has unknown type "$type".',
+        exitCode: _exitDataError,
+      );
+    }
+    if (rawConfig != null && rawConfig is! Map) {
+      throw _CliFailure(
+        'Conversion config pipeline.steps[$index].config must be a mapping.',
+        exitCode: _exitDataError,
+      );
+    }
+    steps.add(
+      TransformStep(
+        type: type,
+        config: Map<String, Object?>.from(
+          rawConfig as Map? ?? const <String, Object?>{},
         ),
-      )
-      .toList();
+      ),
+    );
+  }
+  return steps;
 }
 
 void _refreshConversionConfigTargetMapping(
@@ -1085,7 +1239,13 @@ void _refreshConversionConfigTargetMapping(
 }
 
 Map<String, Object?> _loadConversionConfig(String path) {
-  final yaml = loadYaml(File(path).readAsStringSync()) as YamlMap;
+  final yaml = loadYaml(File(path).readAsStringSync());
+  if (yaml is! YamlMap) {
+    throw const _CliFailure(
+      'Conversion config root must be a YAML mapping.',
+      exitCode: _exitDataError,
+    );
+  }
   return _yamlToObjectMap(yaml);
 }
 
@@ -1189,16 +1349,16 @@ void _printPipelineNoteSummary(
   final outRanged = overFlowed + underFlowed;
   final dropped = droppedFreq + droppedSame;
 
-  stdout.writeln('[lxmusic] note summary:');
-  stdout.writeln('[lxmusic]   total: $inputNoteCount -> $outputNoteCount');
-  stdout.writeln(
+  stderr.writeln('[lxmusic] note summary:');
+  stderr.writeln('[lxmusic]   total: $inputNoteCount -> $outputNoteCount');
+  stderr.writeln(
     '[lxmusic]   out-of-range discarded: $outRanged '
     '(+$overFlowed, -$underFlowed) (${pct(outRanged, inputNoteCount)}%)',
   );
-  stdout.writeln(
+  stderr.writeln(
     '[lxmusic]   semitone-rounded: $rounded (${pct(rounded, inputNoteCount)}%)',
   );
-  stdout.writeln(
+  stderr.writeln(
     '[lxmusic]   too-dense discarded: $dropped (${pct(dropped, outputNoteCount)}%)',
   );
 }
@@ -1209,11 +1369,33 @@ void _writeTextOutput({
   required String label,
 }) {
   if (outputPath != null && outputPath.isNotEmpty) {
-    File(outputPath).writeAsStringSync(contents);
-    stdout.writeln('[lxmusic] wrote $label to $outputPath');
+    _writeTextFile(outputPath, contents);
+    stderr.writeln('[lxmusic] wrote $label to $outputPath');
     return;
   }
   stdout.writeln(contents);
+}
+
+void _writeTextFile(String path, String contents) {
+  try {
+    File(path).writeAsStringSync(contents);
+  } on FileSystemException catch (error) {
+    throw _CliFailure(
+      'Cannot create output: ${_fileSystemErrorMessage(error)}',
+      exitCode: _exitCannotCreate,
+    );
+  }
+}
+
+void _writeBytesFile(String path, List<int> contents) {
+  try {
+    File(path).writeAsBytesSync(contents);
+  } on FileSystemException catch (error) {
+    throw _CliFailure(
+      'Cannot create output: ${_fileSystemErrorMessage(error)}',
+      exitCode: _exitCannotCreate,
+    );
+  }
 }
 
 class _JsonScoreParser implements ScoreParser {
