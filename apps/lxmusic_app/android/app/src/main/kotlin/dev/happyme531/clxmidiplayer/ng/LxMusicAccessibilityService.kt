@@ -21,7 +21,6 @@ import android.view.View
 import android.view.WindowInsets
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
-import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
@@ -33,6 +32,7 @@ class LxMusicAccessibilityService : AccessibilityService() {
     private lateinit var windowManager: WindowManager
     private val mainHandler = Handler(Looper.getMainLooper())
     private var compactOverlay: View? = null
+    private var compactOverlayParams: WindowManager.LayoutParams? = null
     private var calibrationOverlay: CalibrationOverlayView? = null
     private var session: CalibrationSession? = null
     private var foregroundPackage: String? = null
@@ -80,6 +80,11 @@ class LxMusicAccessibilityService : AccessibilityService() {
                     message = "校准过程中游戏发生了横竖屏切换，请重新开始校准。",
                 )
                 return
+            }
+        }
+        compactOverlay?.let { overlay ->
+            compactOverlayParams?.let { params ->
+                overlay.post { clampCompactOverlay(overlay, params) }
             }
         }
         calibrationOverlay?.refreshViewport()
@@ -131,57 +136,82 @@ class LxMusicAccessibilityService : AccessibilityService() {
     private fun showCompactOverlay(active: CalibrationSession) {
         val density = resources.displayMetrics.density
         val container = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(12f, density), dp(8f, density), dp(12f, density), dp(8f, density))
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(8f, density), dp(7f, density), dp(8f, density), dp(7f, density))
             background = roundedBackground(
-                Color.argb(205, 30, 34, 39),
-                dp(14f, density).toFloat(),
+                color = Color.argb(238, 35, 39, 44),
+                radius = dp(18f, density).toFloat(),
+                strokeColor = Color.argb(45, 255, 255, 255),
+                strokeWidth = dp(1f, density),
             )
-            elevation = dp(8f, density).toFloat()
+            elevation = dp(10f, density).toFloat()
         }
+
+        val dragArea = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, 0, dp(10f, density), 0)
+            contentDescription = "拖动校准悬浮条"
+        }
+        dragArea.addView(
+            DragGripView(this, density),
+            LinearLayout.LayoutParams(dp(28f, density), dp(44f, density)),
+        )
+        dragArea.addView(
+            LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER_VERTICAL
+                addView(
+                    TextView(this@LxMusicAccessibilityService).apply {
+                        setTextColor(Color.WHITE)
+                        textSize = 12f
+                        setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL))
+                        maxLines = 1
+                        text = "${active.profileDisplayName} · ${active.layoutDisplayName}"
+                    },
+                )
+                addView(
+                    TextView(this@LxMusicAccessibilityService).apply {
+                        setTextColor(Color.argb(170, 255, 255, 255))
+                        textSize = 10f
+                        maxLines = 1
+                        text = "按住此处移动"
+                    },
+                )
+            },
+            LinearLayout.LayoutParams(dp(132f, density), LinearLayout.LayoutParams.WRAP_CONTENT),
+        )
+        container.addView(dragArea)
+        container.addView(
+            compactActionView(
+                text = "开始校准",
+                textColor = Color.rgb(19, 45, 40),
+                backgroundColor = Color.rgb(99, 211, 188),
+                width = dp(82f, density),
+                density = density,
+            ) { showFullOverlay() },
+        )
         container.addView(
             TextView(this).apply {
+                gravity = Gravity.CENTER
+                text = "×"
                 setTextColor(Color.WHITE)
-                textSize = 13f
-                setTypeface(Typeface.DEFAULT, Typeface.BOLD)
-                text = "${active.profileDisplayName} · ${active.layoutDisplayName}"
-            },
-        )
-        val buttons = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.END
-        }
-        buttons.addView(
-            Button(this).apply {
-                text = "展开校准"
-                setTextColor(Color.WHITE)
-                textSize = 13f
-                minHeight = dp(40f, density)
-                minimumHeight = dp(40f, density)
+                textSize = 24f
+                contentDescription = "取消校准"
+                isClickable = true
                 background = roundedBackground(
-                    Color.argb(185, 46, 125, 246),
-                    dp(11f, density).toFloat(),
-                )
-                setOnClickListener { showFullOverlay() }
-            },
-        )
-        buttons.addView(
-            Button(this).apply {
-                text = "取消"
-                setTextColor(Color.WHITE)
-                textSize = 13f
-                minHeight = dp(40f, density)
-                minimumHeight = dp(40f, density)
-                background = roundedBackground(
-                    Color.argb(165, 91, 96, 104),
-                    dp(11f, density).toFloat(),
+                    color = Color.argb(28, 255, 255, 255),
+                    radius = dp(12f, density).toFloat(),
                 )
                 setOnClickListener {
                     finishSession(status = "cancelled", message = "用户取消了校准。")
                 }
             },
+            LinearLayout.LayoutParams(dp(40f, density), dp(40f, density)).apply {
+                marginStart = dp(6f, density)
+            },
         )
-        container.addView(buttons)
 
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -191,11 +221,19 @@ class LxMusicAccessibilityService : AccessibilityService() {
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT,
         ).apply {
-            gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+            gravity = Gravity.TOP or Gravity.START
+            x = dp(16f, density)
             y = dp(64f, density)
         }
+        makeCompactOverlayDraggable(dragArea, container, params)
         windowManager.addView(container, params)
         compactOverlay = container
+        compactOverlayParams = params
+        container.post {
+            val metrics = resources.displayMetrics
+            params.x = ((metrics.widthPixels - container.width) / 2).coerceAtLeast(dp(8f, density))
+            clampCompactOverlay(container, params)
+        }
     }
 
     private fun showFullOverlay() {
@@ -218,6 +256,7 @@ class LxMusicAccessibilityService : AccessibilityService() {
             .apply()
         compactOverlay?.let(::removeOverlay)
         compactOverlay = null
+        compactOverlayParams = null
         if (calibrationOverlay != null) {
             return
         }
@@ -340,7 +379,77 @@ class LxMusicAccessibilityService : AccessibilityService() {
         compactOverlay?.let(::removeOverlay)
         calibrationOverlay?.let(::removeOverlay)
         compactOverlay = null
+        compactOverlayParams = null
         calibrationOverlay = null
+    }
+
+    private fun compactActionView(
+        text: String,
+        textColor: Int,
+        backgroundColor: Int,
+        width: Int,
+        density: Float,
+        onClick: () -> Unit,
+    ): TextView = TextView(this).apply {
+        gravity = Gravity.CENTER
+        this.text = text
+        setTextColor(textColor)
+        textSize = 12f
+        setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL))
+        contentDescription = text
+        isClickable = true
+        background = roundedBackground(
+            color = backgroundColor,
+            radius = dp(12f, density).toFloat(),
+        )
+        setOnClickListener { onClick() }
+        layoutParams = LinearLayout.LayoutParams(width, dp(40f, density))
+    }
+
+    private fun makeCompactOverlayDraggable(
+        dragArea: View,
+        overlay: View,
+        params: WindowManager.LayoutParams,
+    ) {
+        var downRawX = 0f
+        var downRawY = 0f
+        var downX = 0
+        var downY = 0
+        dragArea.setOnTouchListener { _, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    downRawX = event.rawX
+                    downRawY = event.rawY
+                    downX = params.x
+                    downY = params.y
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    params.x = downX + (event.rawX - downRawX).toInt()
+                    params.y = downY + (event.rawY - downRawY).toInt()
+                    clampCompactOverlay(overlay, params)
+                    true
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> true
+                else -> false
+            }
+        }
+    }
+
+    private fun clampCompactOverlay(
+        overlay: View,
+        params: WindowManager.LayoutParams,
+    ) {
+        if (overlay.width <= 0 || overlay.height <= 0) return
+        val metrics = resources.displayMetrics
+        val margin = dp(8f, metrics.density)
+        params.x = params.x.coerceIn(margin, max(margin, metrics.widthPixels - overlay.width - margin))
+        params.y = params.y.coerceIn(margin, max(margin, metrics.heightPixels - overlay.height - margin))
+        try {
+            windowManager.updateViewLayout(overlay, params)
+        } catch (_: Exception) {
+            // The overlay may be in the process of being removed.
+        }
     }
 
     private fun removeOverlay(view: View) {
@@ -481,7 +590,9 @@ private class CalibrationOverlayView(
 ) : View(context) {
     private val density = resources.displayMetrics.density
     private val minimumSize = dp(48f, density).toFloat()
-    private val handleRadius = dp(18f, density).toFloat()
+    private val visibleHandleRadius = dp(15f, density).toFloat()
+    private val handleHitRadius = dp(28f, density).toFloat()
+    private val handleOffset = dp(34f, density).toFloat()
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.argb(235, 83, 211, 190)
@@ -494,10 +605,16 @@ private class CalibrationOverlayView(
         textAlign = Paint.Align.CENTER
         setShadowLayer(dp(2f, density).toFloat(), 0f, dp(1f, density).toFloat(), Color.BLACK)
     }
-    private val titlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    private val toolbarTitlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE
-        textSize = dp(14f, density).toFloat()
+        textSize = dp(12f, density).toFloat()
+        textAlign = Paint.Align.LEFT
+        typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+    }
+    private val actionTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        textSize = dp(12f, density).toFloat()
         textAlign = Paint.Align.CENTER
+        typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
     }
     private var left = 0f
     private var top = 0f
@@ -505,11 +622,26 @@ private class CalibrationOverlayView(
     private var bottom = 0f
     private var initialized = false
     private var activeHandle = Handle.none
+    private var leftTopHandleX = 0f
+    private var leftTopHandleY = 0f
+    private var rightBottomHandleX = 0f
+    private var rightBottomHandleY = 0f
+    private var handleTouchStartX = 0f
+    private var handleTouchStartY = 0f
+    private var dragStartLeft = 0f
+    private var dragStartTop = 0f
+    private var dragStartRight = 0f
+    private var dragStartBottom = 0f
     private var pressedButton = ActionButton.none
+    private var draggingToolbar = false
+    private var toolbarDragOffsetX = 0f
+    private var toolbarDragOffsetY = 0f
+    private var toolbarInitialized = false
     private val saveButton = RectF()
     private val resetButton = RectF()
     private val cancelButton = RectF()
-    private val titlePill = RectF()
+    private val toolbar = RectF()
+    private val toolbarDragArea = RectF()
     private val viewport = Rect()
 
     override fun onAttachedToWindow() {
@@ -535,17 +667,22 @@ private class CalibrationOverlayView(
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-        canvas.drawColor(Color.argb(42, 28, 32, 36))
+        canvas.drawColor(Color.argb(20, 24, 28, 32))
 
         paint.style = Paint.Style.FILL
-        paint.color = Color.argb(26, 83, 211, 190)
+        paint.color = Color.argb(20, 83, 211, 190)
         canvas.drawRoundRect(
             RectF(left, top, right, bottom),
             dp(10f, density).toFloat(),
             dp(10f, density).toFloat(),
             paint,
         )
-        canvas.drawRect(left, top, right, bottom, borderPaint)
+        canvas.drawRoundRect(
+            RectF(left, top, right, bottom),
+            dp(10f, density).toFloat(),
+            dp(10f, density).toFloat(),
+            borderPaint,
+        )
 
         paint.color = Color.argb(225, 83, 211, 190)
         for (key in session.keys) {
@@ -555,30 +692,90 @@ private class CalibrationOverlayView(
             canvas.drawText(key.keyId, x, y - dp(8f, density), labelPaint)
         }
 
-        paint.color = Color.argb(235, 255, 205, 64)
-        canvas.drawCircle(left, top, handleRadius, paint)
-        canvas.drawCircle(right, bottom, handleRadius, paint)
-        labelPaint.color = Color.BLACK
-        canvas.drawText("↖", left, top + dp(4f, density), labelPaint)
-        canvas.drawText("↘", right, bottom + dp(4f, density), labelPaint)
-        labelPaint.color = Color.WHITE
+        updateHandlePositions()
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = dp(1.5f, density).toFloat()
+        paint.color = Color.argb(205, 255, 198, 49)
+        canvas.drawLine(left, top, leftTopHandleX, leftTopHandleY, paint)
+        canvas.drawLine(right, bottom, rightBottomHandleX, rightBottomHandleY, paint)
+        drawTarget(canvas, left, top)
+        drawTarget(canvas, right, bottom)
 
-        paint.color = Color.argb(190, 25, 29, 34)
-        canvas.drawRoundRect(
-            titlePill,
-            dp(13f, density).toFloat(),
-            dp(13f, density).toFloat(),
+        paint.style = Paint.Style.FILL
+        paint.color = Color.argb(70, 255, 198, 49)
+        canvas.drawCircle(
+            leftTopHandleX,
+            leftTopHandleY,
+            visibleHandleRadius + dp(5f, density),
             paint,
         )
-        canvas.drawText(
-            "${orientationLabel(session.orientation)} · 拖动两端锚点对齐游戏键位",
-            titlePill.centerX(),
-            titlePill.centerY() - (titlePaint.ascent() + titlePaint.descent()) / 2,
-            titlePaint,
+        canvas.drawCircle(
+            rightBottomHandleX,
+            rightBottomHandleY,
+            visibleHandleRadius + dp(5f, density),
+            paint,
         )
-        drawButton(canvas, saveButton, "保存", Color.argb(180, 46, 125, 246))
-        drawButton(canvas, resetButton, "重置", Color.argb(165, 75, 81, 90))
-        drawButton(canvas, cancelButton, "取消", Color.argb(170, 176, 58, 58))
+        paint.color = Color.rgb(255, 198, 49)
+        canvas.drawCircle(leftTopHandleX, leftTopHandleY, visibleHandleRadius, paint)
+        canvas.drawCircle(rightBottomHandleX, rightBottomHandleY, visibleHandleRadius, paint)
+        labelPaint.color = Color.BLACK
+        canvas.drawText(
+            "↖",
+            leftTopHandleX,
+            leftTopHandleY + dp(4f, density),
+            labelPaint,
+        )
+        canvas.drawText(
+            "↘",
+            rightBottomHandleX,
+            rightBottomHandleY + dp(4f, density),
+            labelPaint,
+        )
+        labelPaint.color = Color.WHITE
+
+        paint.color = Color.argb(238, 35, 39, 44)
+        canvas.drawRoundRect(
+            toolbar,
+            dp(18f, density).toFloat(),
+            dp(18f, density).toFloat(),
+            paint,
+        )
+        paint.color = Color.argb(42, 255, 255, 255)
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = dp(1f, density).toFloat()
+        canvas.drawRoundRect(
+            toolbar,
+            dp(18f, density).toFloat(),
+            dp(18f, density).toFloat(),
+            paint,
+        )
+        paint.style = Paint.Style.FILL
+        drawDragGrip(canvas)
+        drawToolbarText(canvas)
+        drawActionButton(
+            canvas = canvas,
+            bounds = resetButton,
+            text = "重置",
+            background = Color.argb(30, 255, 255, 255),
+            foreground = Color.argb(220, 255, 255, 255),
+            action = ActionButton.reset,
+        )
+        drawActionButton(
+            canvas = canvas,
+            bounds = cancelButton,
+            text = "取消",
+            background = Color.argb(28, 244, 119, 126),
+            foreground = Color.rgb(255, 184, 188),
+            action = ActionButton.cancel,
+        )
+        drawActionButton(
+            canvas = canvas,
+            bounds = saveButton,
+            text = "完成",
+            background = Color.rgb(99, 211, 188),
+            foreground = Color.rgb(19, 45, 40),
+            action = ActionButton.save,
+        )
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
@@ -588,28 +785,72 @@ private class CalibrationOverlayView(
         val y = event.rawY - location[1]
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
-                activeHandle = when {
-                    hypot(x - left, y - top) <= handleRadius * 1.5f -> Handle.leftTop
-                    hypot(x - right, y - bottom) <= handleRadius * 1.5f -> Handle.rightBottom
-                    else -> Handle.none
+                updateHandlePositions()
+                pressedButton = buttonAt(x, y)
+                draggingToolbar = pressedButton == ActionButton.none && toolbarDragArea.contains(x, y)
+                if (draggingToolbar) {
+                    toolbarDragOffsetX = x - toolbar.left
+                    toolbarDragOffsetY = y - toolbar.top
                 }
-                pressedButton = if (activeHandle == Handle.none) buttonAt(x, y) else ActionButton.none
-                return activeHandle != Handle.none || pressedButton != ActionButton.none
-            }
-            MotionEvent.ACTION_MOVE -> {
-                when (activeHandle) {
-                    Handle.leftTop -> {
-                        left = x.coerceIn(viewport.left.toFloat(), max(viewport.left.toFloat(), right - minimumSize))
-                        top = y.coerceIn(viewport.top.toFloat(), max(viewport.top.toFloat(), bottom - minimumSize))
+                activeHandle = if (pressedButton == ActionButton.none && !draggingToolbar) {
+                    when {
+                        hypot(x - leftTopHandleX, y - leftTopHandleY) <= handleHitRadius -> {
+                            Handle.leftTop
+                        }
+                        hypot(x - rightBottomHandleX, y - rightBottomHandleY) <= handleHitRadius -> {
+                            Handle.rightBottom
+                        }
+                        else -> Handle.none
                     }
-                    Handle.rightBottom -> {
-                        right = x.coerceIn(left + minimumSize, viewport.right.toFloat())
-                        bottom = y.coerceIn(top + minimumSize, viewport.bottom.toFloat())
-                    }
-                    Handle.none -> Unit
+                } else {
+                    Handle.none
+                }
+                if (activeHandle != Handle.none) {
+                    handleTouchStartX = x
+                    handleTouchStartY = y
+                    dragStartLeft = left
+                    dragStartTop = top
+                    dragStartRight = right
+                    dragStartBottom = bottom
                 }
                 invalidate()
-                return activeHandle != Handle.none
+                return activeHandle != Handle.none ||
+                    pressedButton != ActionButton.none ||
+                    draggingToolbar
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (draggingToolbar) {
+                    moveToolbar(
+                        x - toolbarDragOffsetX,
+                        y - toolbarDragOffsetY,
+                    )
+                } else {
+                    when (activeHandle) {
+                        Handle.leftTop -> {
+                            left = (dragStartLeft + x - handleTouchStartX).coerceIn(
+                                viewport.left.toFloat(),
+                                max(viewport.left.toFloat(), right - minimumSize),
+                            )
+                            top = (dragStartTop + y - handleTouchStartY).coerceIn(
+                                viewport.top.toFloat(),
+                                max(viewport.top.toFloat(), bottom - minimumSize),
+                            )
+                        }
+                        Handle.rightBottom -> {
+                            right = (dragStartRight + x - handleTouchStartX).coerceIn(
+                                left + minimumSize,
+                                viewport.right.toFloat(),
+                            )
+                            bottom = (dragStartBottom + y - handleTouchStartY).coerceIn(
+                                top + minimumSize,
+                                viewport.bottom.toFloat(),
+                            )
+                        }
+                        Handle.none -> Unit
+                    }
+                }
+                invalidate()
+                return activeHandle != Handle.none || draggingToolbar || pressedButton != ActionButton.none
             }
             MotionEvent.ACTION_UP -> {
                 val releasedButton = buttonAt(x, y)
@@ -623,12 +864,15 @@ private class CalibrationOverlayView(
                 }
                 activeHandle = Handle.none
                 pressedButton = ActionButton.none
+                draggingToolbar = false
                 invalidate()
                 return true
             }
             MotionEvent.ACTION_CANCEL -> {
                 activeHandle = Handle.none
                 pressedButton = ActionButton.none
+                draggingToolbar = false
+                invalidate()
                 return true
             }
         }
@@ -680,30 +924,131 @@ private class CalibrationOverlayView(
         bottom = bottom.coerceIn(top + minimumSize, viewport.bottom.toFloat())
     }
 
-    private fun layoutButtons() {
-        val gap = dp(8f, density).toFloat()
-        val margin = dp(16f, density).toFloat()
-        val titleHeight = dp(38f, density).toFloat()
-        val titleWidth = minOf(
-            dp(360f, density).toFloat(),
+    private fun updateHandlePositions() {
+        if (viewport.width() <= 0 || viewport.height() <= 0) {
+            leftTopHandleX = left
+            leftTopHandleY = top
+            rightBottomHandleX = right
+            rightBottomHandleY = bottom
+            return
+        }
+        val safeRadius = visibleHandleRadius + dp(5f, density)
+        val minX = viewport.left + safeRadius
+        val maxX = viewport.right - safeRadius
+        val minY = viewport.top + safeRadius
+        val maxY = viewport.bottom - safeRadius
+        leftTopHandleX = offsetHandleCoordinate(left, -1f, minX, maxX)
+        leftTopHandleY = offsetHandleCoordinate(top, -1f, minY, maxY)
+        rightBottomHandleX = offsetHandleCoordinate(right, 1f, minX, maxX)
+        rightBottomHandleY = offsetHandleCoordinate(bottom, 1f, minY, maxY)
+    }
+
+    private fun offsetHandleCoordinate(
+        origin: Float,
+        preferredDirection: Float,
+        minimum: Float,
+        maximum: Float,
+    ): Float {
+        if (maximum <= minimum) return origin
+        val preferred = origin + preferredDirection * handleOffset
+        if (preferred in minimum..maximum) return preferred
+        val flipped = origin - preferredDirection * handleOffset
+        if (flipped in minimum..maximum) return flipped
+        return preferred.coerceIn(minimum, maximum)
+    }
+
+    private fun drawTarget(canvas: Canvas, x: Float, y: Float) {
+        val ringRadius = dp(5f, density).toFloat()
+        val innerArm = dp(7f, density).toFloat()
+        val outerArm = dp(10f, density).toFloat()
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = dp(1.5f, density).toFloat()
+        paint.color = Color.argb(235, 255, 226, 132)
+        canvas.drawCircle(x, y, ringRadius, paint)
+        canvas.drawLine(x - outerArm, y, x - innerArm, y, paint)
+        canvas.drawLine(x + innerArm, y, x + outerArm, y, paint)
+        canvas.drawLine(x, y - outerArm, x, y - innerArm, paint)
+        canvas.drawLine(x, y + innerArm, x, y + outerArm, paint)
+    }
+
+    private fun layoutToolbar() {
+        val margin = dp(12f, density).toFloat()
+        val toolbarWidth = minOf(
+            dp(376f, density).toFloat(),
             viewport.width() - margin * 2,
         )
-        val titleTop = viewport.top + dp(12f, density)
-        titlePill.set(
-            viewport.exactCenterX() - titleWidth / 2,
-            titleTop.toFloat(),
-            viewport.exactCenterX() + titleWidth / 2,
-            titleTop + titleHeight,
+        val toolbarHeight = dp(52f, density).toFloat()
+        if (!toolbarInitialized) {
+            val toolbarTop = viewport.top + margin
+            toolbar.set(
+                viewport.exactCenterX() - toolbarWidth / 2,
+                toolbarTop,
+                viewport.exactCenterX() + toolbarWidth / 2,
+                toolbarTop + toolbarHeight,
+            )
+            toolbarInitialized = true
+        } else {
+            toolbar.set(
+                toolbar.left,
+                toolbar.top,
+                toolbar.left + toolbarWidth,
+                toolbar.top + toolbarHeight,
+            )
+            clampToolbar()
+        }
+        layoutToolbarContents()
+    }
+
+    private fun layoutToolbarContents() {
+        val edgePadding = dp(8f, density).toFloat()
+        val gap = dp(5f, density).toFloat()
+        val buttonTop = toolbar.centerY() - dp(18f, density)
+        val buttonBottom = buttonTop + dp(36f, density)
+        val saveWidth = dp(62f, density).toFloat()
+        val secondaryWidth = dp(52f, density).toFloat()
+
+        saveButton.set(
+            toolbar.right - edgePadding - saveWidth,
+            buttonTop,
+            toolbar.right - edgePadding,
+            buttonBottom,
         )
-        val buttonHeight = dp(40f, density).toFloat()
-        val availableWidth = (viewport.width() - margin * 2 - gap * 2) / 3f
-        val buttonWidth = minOf(dp(92f, density).toFloat(), availableWidth)
-        val top = titlePill.bottom + dp(8f, density)
-        val totalWidth = buttonWidth * 3 + gap * 2
-        val start = viewport.exactCenterX() - totalWidth / 2
-        saveButton.set(start, top, start + buttonWidth, top + buttonHeight)
-        resetButton.set(saveButton.right + gap, top, saveButton.right + gap + buttonWidth, top + buttonHeight)
-        cancelButton.set(resetButton.right + gap, top, resetButton.right + gap + buttonWidth, top + buttonHeight)
+        cancelButton.set(
+            saveButton.left - gap - secondaryWidth,
+            buttonTop,
+            saveButton.left - gap,
+            buttonBottom,
+        )
+        resetButton.set(
+            cancelButton.left - gap - secondaryWidth,
+            buttonTop,
+            cancelButton.left - gap,
+            buttonBottom,
+        )
+        toolbarDragArea.set(
+            toolbar.left,
+            toolbar.top,
+            resetButton.left - gap / 2,
+            toolbar.bottom,
+        )
+    }
+
+    private fun moveToolbar(desiredLeft: Float, desiredTop: Float) {
+        if (viewport.width() <= 0 || viewport.height() <= 0) return
+        val margin = dp(6f, density).toFloat()
+        val minLeft = viewport.left + margin
+        val maxLeft = max(minLeft, viewport.right - margin - toolbar.width())
+        val minTop = viewport.top + margin
+        val maxTop = max(minTop, viewport.bottom - margin - toolbar.height())
+        toolbar.offsetTo(
+            desiredLeft.coerceIn(minLeft, maxLeft),
+            desiredTop.coerceIn(minTop, maxTop),
+        )
+        layoutToolbarContents()
+    }
+
+    private fun clampToolbar() {
+        moveToolbar(toolbar.left, toolbar.top)
     }
 
     private fun updateViewport(insets: WindowInsets) {
@@ -725,7 +1070,7 @@ private class CalibrationOverlayView(
         if (next.width() <= 0 || next.height() <= 0) return
         val viewportChanged = viewport != next
         viewport.set(next)
-        layoutButtons()
+        layoutToolbar()
         if (!initialized) {
             resetBounds(usePrevious = true)
             initialized = true
@@ -735,16 +1080,83 @@ private class CalibrationOverlayView(
         invalidate()
     }
 
-    private fun drawButton(canvas: Canvas, bounds: RectF, text: String, color: Int) {
-        paint.color = color
+    private fun drawDragGrip(canvas: Canvas) {
+        paint.color = Color.argb(145, 255, 255, 255)
         paint.style = Paint.Style.FILL
-        canvas.drawRoundRect(bounds, dp(13f, density).toFloat(), dp(13f, density).toFloat(), paint)
+        val centerX = toolbar.left + dp(17f, density)
+        val centerY = toolbar.centerY()
+        val columnGap = dp(5f, density).toFloat()
+        val rowGap = dp(6f, density).toFloat()
+        val radius = dp(1.4f, density).toFloat()
+        for (column in -1..1 step 2) {
+            for (row in -1..1) {
+                canvas.drawCircle(
+                    centerX + column * columnGap / 2,
+                    centerY + row * rowGap,
+                    radius,
+                    paint,
+                )
+            }
+        }
+    }
+
+    private fun drawToolbarText(canvas: Canvas) {
+        val textLeft = toolbar.left + dp(34f, density)
+        val maxWidth = max(0f, resetButton.left - dp(8f, density) - textLeft)
+        val title = "${shortOrientationLabel(session.orientation)} · 十字对准角键"
+        canvas.drawText(
+            fitText(title, toolbarTitlePaint, maxWidth),
+            textLeft,
+            toolbar.centerY() - (toolbarTitlePaint.ascent() + toolbarTitlePaint.descent()) / 2,
+            toolbarTitlePaint,
+        )
+    }
+
+    private fun drawActionButton(
+        canvas: Canvas,
+        bounds: RectF,
+        text: String,
+        background: Int,
+        foreground: Int,
+        action: ActionButton,
+    ) {
+        paint.color = if (pressedButton == action) {
+            Color.argb(
+                minOf(255, Color.alpha(background) + 28),
+                Color.red(background),
+                Color.green(background),
+                Color.blue(background),
+            )
+        } else {
+            background
+        }
+        paint.style = Paint.Style.FILL
+        canvas.drawRoundRect(
+            bounds,
+            dp(12f, density).toFloat(),
+            dp(12f, density).toFloat(),
+            paint,
+        )
+        actionTextPaint.color = foreground
         canvas.drawText(
             text,
             bounds.centerX(),
-            bounds.centerY() - (titlePaint.ascent() + titlePaint.descent()) / 2,
-            titlePaint,
+            bounds.centerY() - (actionTextPaint.ascent() + actionTextPaint.descent()) / 2,
+            actionTextPaint,
         )
+    }
+
+    private fun fitText(text: String, textPaint: Paint, maxWidth: Float): String {
+        if (maxWidth <= 0f) return ""
+        if (textPaint.measureText(text) <= maxWidth) return text
+        val ellipsis = "…"
+        val ellipsisWidth = textPaint.measureText(ellipsis)
+        if (ellipsisWidth >= maxWidth) return ellipsis
+        var end = text.length
+        while (end > 0 && textPaint.measureText(text, 0, end) + ellipsisWidth > maxWidth) {
+            end -= 1
+        }
+        return text.substring(0, end) + ellipsis
     }
 
     private fun buttonAt(x: Float, y: Float): ActionButton = when {
@@ -760,11 +1172,46 @@ private class CalibrationOverlayView(
 
 private fun dp(value: Float, density: Float): Int = (value * density + 0.5f).toInt()
 
-private fun roundedBackground(color: Int, radius: Float): GradientDrawable =
+private class DragGripView(
+    context: Context,
+    private val density: Float,
+) : View(context) {
+    private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(150, 255, 255, 255)
+        style = Paint.Style.FILL
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        super.onDraw(canvas)
+        val columnGap = dp(6f, density).toFloat()
+        val rowGap = dp(7f, density).toFloat()
+        val radius = dp(1.5f, density).toFloat()
+        for (column in -1..1 step 2) {
+            for (row in -1..1) {
+                canvas.drawCircle(
+                    width / 2f + column * columnGap / 2,
+                    height / 2f + row * rowGap,
+                    radius,
+                    paint,
+                )
+            }
+        }
+    }
+}
+
+private fun roundedBackground(
+    color: Int,
+    radius: Float,
+    strokeColor: Int? = null,
+    strokeWidth: Int = 0,
+): GradientDrawable =
     GradientDrawable().apply {
         shape = GradientDrawable.RECTANGLE
         cornerRadius = radius
         setColor(ColorStateList.valueOf(color))
+        if (strokeColor != null && strokeWidth > 0) {
+            setStroke(strokeWidth, strokeColor)
+        }
     }
 
 private fun orientationForConfiguration(configuration: Configuration): String? =
@@ -774,8 +1221,8 @@ private fun orientationForConfiguration(configuration: Configuration): String? =
         else -> null
     }
 
-private fun orientationLabel(orientation: String?): String = when (orientation) {
-    "portrait" -> "游戏内竖屏"
-    "landscape" -> "游戏内横屏"
-    else -> "正在检测游戏画面"
+private fun shortOrientationLabel(orientation: String?): String = when (orientation) {
+    "portrait" -> "竖屏"
+    "landscape" -> "横屏"
+    else -> "检测中"
 }

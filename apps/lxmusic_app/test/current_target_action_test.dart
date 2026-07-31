@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:lxmusic_app/core/service_locator.dart';
@@ -54,6 +55,17 @@ void main() {
       ),
       findsOneWidget,
     );
+    expect(
+      find.descendant(
+        of: find.byKey(const ValueKey('current-target-action')),
+        matching: find.text(' (未校准)'),
+      ),
+      findsOneWidget,
+    );
+    final targetLabel = tester.renderObject<RenderParagraph>(
+      find.text('LxMusic-NG Demo / 默认 / 3x7 Demo'),
+    );
+    expect(targetLabel.didExceedMaxLines, isFalse);
     await tester.tap(find.byKey(const ValueKey('current-target-action')));
     await tester.pumpAndSettle();
 
@@ -99,6 +111,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.byKey(const ValueKey('target-filter-layout')), findsOneWidget);
+    expect(_statusText(tester, 'generic_3x7_demo'), '未校准');
     expect(_chipText(tester, 'target-summary-profile'), 'LxMusic-NG Demo');
     expect(_chipText(tester, 'target-summary-variant'), '默认');
     expect(_chipText(tester, 'target-summary-layout'), '选择键位');
@@ -171,6 +184,13 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
+    expect(
+      find.descendant(
+        of: find.byKey(const ValueKey('current-target-action')),
+        matching: find.text(' (未校准)'),
+      ),
+      findsNothing,
+    );
     await tester.tap(find.byKey(const ValueKey('current-target-action')));
     await tester.pumpAndSettle();
 
@@ -179,6 +199,82 @@ void main() {
       tester.widget(find.byKey(const ValueKey('calibrate-current-target'))),
       isA<TextButton>(),
     );
+    await tester.tap(find.text('LxMusic-NG Demo'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('默认'));
+    await tester.pumpAndSettle();
+    expect(_statusText(tester, 'generic_3x7_demo'), '已校准');
+    debugDefaultTargetPlatformOverride = null;
+  });
+
+  testWidgets('layout list reports calibrated and uncalibrated items', (
+    tester,
+  ) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.android;
+    final bundle = loadTestYamlAssetBundle();
+    final repository = _MemoryCalibrationRepository(
+      Calibration(
+        key: const CalibrationKey(
+          profileId: 'sky',
+          layoutId: 'sky_3x5',
+          deviceId: 'android-test',
+        ),
+        orientation: 'portrait',
+        leftTopPx: (10, 20),
+        rightBottomPx: (100, 200),
+        capturedAt: DateTime.utc(2026, 7, 31),
+      ),
+    );
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          assetBundleProvider.overrideWithValue(bundle),
+          calibrationPlatformProvider.overrideWithValue(
+            const _FakeCalibrationPlatform(),
+          ),
+          calibrationRepositoryProvider.overrideWithValue(repository),
+          persistedTargetSelectionProvider.overrideWithValue(
+            const PersistedTargetSelection(
+              profileId: 'sky',
+              variantId: 'default',
+              layoutId: 'sky_2x4',
+            ),
+          ),
+          initialPersistedProfileUsageProvider.overrideWithValue(
+            const PersistedProfileUsage(<String, int>{}),
+          ),
+        ],
+        child: MaterialApp(
+          home: Scaffold(
+            appBar: AppBar(actions: const [CurrentTargetAction()]),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      find.descendant(
+        of: find.byKey(const ValueKey('current-target-action')),
+        matching: find.text(' (未校准)'),
+      ),
+      findsOneWidget,
+    );
+    await tester.tap(find.byKey(const ValueKey('current-target-action')));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const ValueKey('target-filter-profile')),
+      '光遇',
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(ListTile, '光遇'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('默认'));
+    await tester.pumpAndSettle();
+
+    expect(_statusText(tester, 'sky_3x5'), '已校准');
+    expect(_statusText(tester, 'sky_2x4'), '未校准');
     debugDefaultTargetPlatformOverride = null;
   });
 }
@@ -236,4 +332,15 @@ String _chipText(WidgetTester tester, String key) {
 
 VoidCallback? _chipOnPressed(WidgetTester tester, String key) {
   return tester.widget<ActionChip>(find.byKey(ValueKey(key))).onPressed;
+}
+
+String _statusText(WidgetTester tester, String layoutId) {
+  final status = find.byKey(ValueKey('layout-calibration-status-$layoutId'));
+  return tester
+          .widgetList<Text>(
+            find.descendant(of: status, matching: find.byType(Text)),
+          )
+          .single
+          .data ??
+      '';
 }

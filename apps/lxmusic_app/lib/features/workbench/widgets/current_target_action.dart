@@ -79,12 +79,33 @@ class _CurrentTargetActionState extends ConsumerState<CurrentTargetAction>
     final layout = ref.watch(selectedLayoutProvider);
     final selectedFile = ref.watch(selectedFileProvider);
     final label = _actionLabel(profile, variant, layout);
+    final calibrationStatus =
+        _supportsAndroidCalibration && profile != null && layout != null
+        ? ref.watch(
+            calibrationStatusProvider((
+              profileId: profile.id,
+              layoutId: layout.id,
+            )),
+          )
+        : null;
+    final isUncalibrated =
+        calibrationStatus?.when(
+          data: (isCalibrated) => !isCalibrated,
+          loading: () => false,
+          error: (_, _) => true,
+        ) ??
+        false;
+    final displayLabel = '$label${isUncalibrated ? ' (未校准)' : ''}';
     final scheme = Theme.of(context).colorScheme;
+    final maxLabelWidth = (MediaQuery.sizeOf(context).width - 240).clamp(
+      120.0,
+      double.infinity,
+    );
 
     return Padding(
       padding: const EdgeInsets.only(right: 8),
       child: Tooltip(
-        message: '当前配置: $label',
+        message: '当前配置: $displayLabel',
         child: TextButton.icon(
           key: const ValueKey('current-target-action'),
           style: TextButton.styleFrom(
@@ -99,8 +120,27 @@ class _CurrentTargetActionState extends ConsumerState<CurrentTargetAction>
           ),
           icon: const Icon(Icons.tune, size: 18),
           label: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 150),
-            child: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis),
+            constraints: BoxConstraints(maxWidth: maxLabelWidth),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Flexible(
+                  child: Text(
+                    label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                if (isUncalibrated)
+                  Text(
+                    ' (未校准)',
+                    style: TextStyle(
+                      color: scheme.error,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+              ],
+            ),
           ),
           onPressed: () {
             showModalBottomSheet<void>(
@@ -173,7 +213,6 @@ class _CurrentTargetPickerSheetState
   KeyLayout? _layout;
   String _filterQuery = '';
   bool _startingCalibration = false;
-  bool? _hasCalibration;
 
   @override
   void initState() {
@@ -185,11 +224,6 @@ class _CurrentTargetPickerSheetState
     _variant = null;
     _layout = null;
     _stage = _PickerStage.profile;
-    if (_supportsAndroidCalibration &&
-        _committedProfile != null &&
-        _committedLayout != null) {
-      unawaited(_loadCalibrationStatus());
-    }
   }
 
   @override
@@ -199,6 +233,18 @@ class _CurrentTargetPickerSheetState
     final filteredProfiles = _filterProfiles(profiles, profileUsage);
     final filteredVariants = _filterVariants();
     final filteredLayouts = _filterLayouts();
+    final committedCalibrationStatus = _watchCalibrationStatus(
+      _committedProfile?.id,
+      _committedLayout?.id,
+    );
+    final layoutCalibrationStatuses = <String, bool?>{
+      if (_supportsAndroidCalibration && _profile != null)
+        for (final binding in filteredLayouts)
+          binding.layoutId: _watchCalibrationStatus(
+            _profile!.id,
+            binding.layoutId,
+          ),
+    };
 
     return SafeArea(
       child: Padding(
@@ -246,7 +292,10 @@ class _CurrentTargetPickerSheetState
                       _committedProfile != null &&
                       _committedLayout != null) ...[
                     const SizedBox(width: 8),
-                    _buildCalibrationAction(context),
+                    _buildCalibrationAction(
+                      context,
+                      committedCalibrationStatus,
+                    ),
                   ],
                 ],
               ),
@@ -294,6 +343,7 @@ class _CurrentTargetPickerSheetState
                         key: const ValueKey('layout-list'),
                         layouts: filteredLayouts,
                         selectedLayoutId: _layout?.id,
+                        calibrationStatuses: layoutCalibrationStatuses,
                         onPreview: _profile == null
                             ? null
                             : (layoutId) => _openLayoutPreview(
@@ -380,7 +430,7 @@ class _CurrentTargetPickerSheetState
     });
   }
 
-  Widget _buildCalibrationAction(BuildContext context) {
+  Widget _buildCalibrationAction(BuildContext context, bool? hasCalibration) {
     final icon = _startingCalibration
         ? const SizedBox.square(
             dimension: 16,
@@ -395,11 +445,11 @@ class _CurrentTargetPickerSheetState
       minimumSize: const WidgetStatePropertyAll(Size.zero),
       tapTargetSize: MaterialTapTargetSize.shrinkWrap,
     );
-    final onPressed = _startingCalibration || _hasCalibration == null
+    final onPressed = _startingCalibration || hasCalibration == null
         ? null
         : _calibrateCurrentTarget;
 
-    if (_hasCalibration == true) {
+    if (hasCalibration == true) {
       return TextButton.icon(
         key: const ValueKey('calibrate-current-target'),
         style: compactStyle.copyWith(
@@ -421,31 +471,19 @@ class _CurrentTargetPickerSheetState
     );
   }
 
-  Future<void> _loadCalibrationStatus() async {
-    final profile = _committedProfile;
-    final layout = _committedLayout;
-    if (profile == null || layout == null) {
-      return;
+  bool? _watchCalibrationStatus(String? profileId, String? layoutId) {
+    if (!_supportsAndroidCalibration || profileId == null || layoutId == null) {
+      return null;
     }
-    try {
-      final platform = await ref.read(calibrationPlatformProvider).getState();
-      final calibration = ref
-          .read(calibrationRepositoryProvider)
-          .load(
-            CalibrationKey(
-              profileId: profile.id,
-              layoutId: layout.id,
-              deviceId: platform.deviceId,
-            ),
-          );
-      if (mounted) {
-        setState(() => _hasCalibration = calibration != null);
-      }
-    } on Object {
-      if (mounted) {
-        setState(() => _hasCalibration = false);
-      }
-    }
+    return ref
+        .watch(
+          calibrationStatusProvider((profileId: profileId, layoutId: layoutId)),
+        )
+        .when(
+          data: (isCalibrated) => isCalibrated,
+          loading: () => null,
+          error: (_, _) => false,
+        );
   }
 
   Future<void> _calibrateCurrentTarget() async {
@@ -812,12 +850,14 @@ class _LayoutList extends StatelessWidget {
     super.key,
     required this.layouts,
     required this.selectedLayoutId,
+    required this.calibrationStatuses,
     required this.onPreview,
     required this.onSelected,
   });
 
   final List<LayoutBinding> layouts;
   final String? selectedLayoutId;
+  final Map<String, bool?> calibrationStatuses;
   final ValueChanged<String>? onPreview;
   final ValueChanged<String> onSelected;
 
@@ -845,15 +885,64 @@ class _LayoutList extends StatelessWidget {
                   onPressed: () => onPreview!(binding.layoutId),
                   icon: const Icon(Icons.visibility_outlined),
                 ),
-              if (binding.isDefault)
-                const _DefaultTag()
-              else
-                const Icon(Icons.check, color: Colors.transparent),
+              if (calibrationStatuses.containsKey(binding.layoutId)) ...[
+                _CalibrationStatusTag(
+                  key: ValueKey(
+                    'layout-calibration-status-${binding.layoutId}',
+                  ),
+                  isCalibrated: calibrationStatuses[binding.layoutId],
+                ),
+                const SizedBox(width: 8),
+              ],
+              if (binding.isDefault) const _DefaultTag(),
             ],
           ),
           onTap: () => onSelected(binding.layoutId),
         );
       },
+    );
+  }
+}
+
+class _CalibrationStatusTag extends StatelessWidget {
+  const _CalibrationStatusTag({super.key, required this.isCalibrated});
+
+  final bool? isCalibrated;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final (label, background, foreground) = switch (isCalibrated) {
+      true => (
+        '已校准',
+        scheme.secondaryContainer.withValues(alpha: 0.58),
+        scheme.onSecondaryContainer,
+      ),
+      false => (
+        '未校准',
+        scheme.errorContainer.withValues(alpha: 0.68),
+        scheme.onErrorContainer,
+      ),
+      null => (
+        '检测中',
+        scheme.surfaceContainerHighest.withValues(alpha: 0.52),
+        scheme.outline,
+      ),
+    };
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: background,
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(
+          color: foreground,
+          fontSize: 12,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
     );
   }
 }

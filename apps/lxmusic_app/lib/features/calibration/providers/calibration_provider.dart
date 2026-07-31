@@ -4,6 +4,27 @@ import 'package:lxmusic_core/lxmusic_core.dart';
 import '../../../core/service_locator.dart';
 import '../platform/calibration_platform.dart';
 
+typedef CalibrationStatusTarget = ({String profileId, String layoutId});
+
+final calibrationDeviceIdProvider = FutureProvider<String>((ref) async {
+  final platform = ref.watch(calibrationPlatformProvider);
+  return (await platform.getState()).deviceId;
+});
+
+final calibrationStatusProvider = FutureProvider.autoDispose
+    .family<bool, CalibrationStatusTarget>((ref, target) async {
+      final repository = ref.watch(calibrationRepositoryProvider);
+      final deviceId = await ref.watch(calibrationDeviceIdProvider.future);
+      return repository.load(
+            CalibrationKey(
+              profileId: target.profileId,
+              layoutId: target.layoutId,
+              deviceId: deviceId,
+            ),
+          ) !=
+          null;
+    });
+
 class CalibrationManagerState {
   const CalibrationManagerState({required this.platform, this.lastResult});
 
@@ -96,6 +117,7 @@ class CalibrationManager extends AsyncNotifier<CalibrationManagerState> {
         await ref
             .read(calibrationRepositoryProvider)
             .save(pending!.calibration!);
+        ref.invalidate(calibrationStatusProvider);
       }
     }
     return CalibrationManagerState(
