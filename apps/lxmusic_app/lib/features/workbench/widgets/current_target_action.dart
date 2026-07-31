@@ -1,18 +1,79 @@
+import 'dart:async';
+
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:lxmusic_core/lxmusic_core.dart';
 
 import '../../../core/service_locator.dart';
+import '../../calibration/calibration_launcher.dart';
+import '../../calibration/platform/calibration_platform.dart';
+import '../../calibration/providers/calibration_provider.dart';
 import '../../layout_preview/layout_preview_route.dart';
 import '../../library/models/music_file.dart';
 import '../providers/workbench_provider.dart';
 
-class CurrentTargetAction extends ConsumerWidget {
+class CurrentTargetAction extends ConsumerStatefulWidget {
   const CurrentTargetAction({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<CurrentTargetAction> createState() =>
+      _CurrentTargetActionState();
+}
+
+class _CurrentTargetActionState extends ConsumerState<CurrentTargetAction>
+    with WidgetsBindingObserver {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && _supportsAndroidCalibration) {
+      unawaited(_consumeCalibrationResult());
+    }
+  }
+
+  Future<void> _consumeCalibrationResult() async {
+    try {
+      final result = await ref
+          .read(calibrationManagerProvider.notifier)
+          .refresh();
+      if (!mounted || result == null) {
+        return;
+      }
+      final message = switch (result.status) {
+        CalibrationSessionStatus.saved => '键位校准已保存',
+        CalibrationSessionStatus.cancelled => '键位校准已取消',
+        CalibrationSessionStatus.error =>
+          result.message ?? '键位校准失败：${result.errorCode ?? 'unknown'}',
+        CalibrationSessionStatus.started => null,
+      };
+      if (message != null) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(message)));
+      }
+    } on Object catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('读取校准结果失败：$error')));
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final profile = ref.watch(selectedProfileProvider);
     final variant = ref.watch(selectedVariantProvider);
     final layout = ref.watch(selectedLayoutProvider);
@@ -39,11 +100,7 @@ class CurrentTargetAction extends ConsumerWidget {
           icon: const Icon(Icons.tune, size: 18),
           label: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 150),
-            child: Text(
-              label,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
+            child: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis),
           ),
           onPressed: () {
             showModalBottomSheet<void>(
@@ -115,6 +172,8 @@ class _CurrentTargetPickerSheetState
   InstrumentVariant? _variant;
   KeyLayout? _layout;
   String _filterQuery = '';
+  bool _startingCalibration = false;
+  bool? _hasCalibration;
 
   @override
   void initState() {
@@ -126,6 +185,11 @@ class _CurrentTargetPickerSheetState
     _variant = null;
     _layout = null;
     _stage = _PickerStage.profile;
+    if (_supportsAndroidCalibration &&
+        _committedProfile != null &&
+        _committedLayout != null) {
+      unawaited(_loadCalibrationStatus());
+    }
   }
 
   @override
@@ -152,8 +216,8 @@ class _CurrentTargetPickerSheetState
                   Text(
                     '当前配置',
                     style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                          fontWeight: FontWeight.w600,
-                        ),
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
                   const SizedBox(width: 12),
                   Expanded(
@@ -167,7 +231,8 @@ class _CurrentTargetPickerSheetState
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
-                        color: _committedProfile != null &&
+                        color:
+                            _committedProfile != null &&
                                 _committedVariant != null &&
                                 _committedLayout != null
                             ? Theme.of(context).colorScheme.onSurface
@@ -177,6 +242,12 @@ class _CurrentTargetPickerSheetState
                       textAlign: TextAlign.end,
                     ),
                   ),
+                  if (_supportsAndroidCalibration &&
+                      _committedProfile != null &&
+                      _committedLayout != null) ...[
+                    const SizedBox(width: 8),
+                    _buildCalibrationAction(context),
+                  ],
                 ],
               ),
               const SizedBox(height: 12),
@@ -208,30 +279,30 @@ class _CurrentTargetPickerSheetState
                     duration: const Duration(milliseconds: 180),
                     child: switch (_stage) {
                       _PickerStage.profile => _ProfileList(
-                          key: const ValueKey('profile-list'),
-                          profiles: filteredProfiles,
-                          selectedProfileId: _profile?.id,
-                          onSelected: _handleProfileSelected,
-                        ),
+                        key: const ValueKey('profile-list'),
+                        profiles: filteredProfiles,
+                        selectedProfileId: _profile?.id,
+                        onSelected: _handleProfileSelected,
+                      ),
                       _PickerStage.variant => _VariantList(
-                          key: const ValueKey('variant-list'),
-                          variants: filteredVariants,
-                          selectedVariantId: _variant?.id,
-                          onSelected: _handleVariantSelected,
-                        ),
+                        key: const ValueKey('variant-list'),
+                        variants: filteredVariants,
+                        selectedVariantId: _variant?.id,
+                        onSelected: _handleVariantSelected,
+                      ),
                       _PickerStage.layout => _LayoutList(
-                          key: const ValueKey('layout-list'),
-                          layouts: filteredLayouts,
-                          selectedLayoutId: _layout?.id,
-                          onPreview: _profile == null
-                              ? null
-                              : (layoutId) => _openLayoutPreview(
-                                    context,
-                                    profile: _profile!,
-                                    layoutId: layoutId,
-                                  ),
-                          onSelected: _handleLayoutSelected,
-                        ),
+                        key: const ValueKey('layout-list'),
+                        layouts: filteredLayouts,
+                        selectedLayoutId: _layout?.id,
+                        onPreview: _profile == null
+                            ? null
+                            : (layoutId) => _openLayoutPreview(
+                                context,
+                                profile: _profile!,
+                                layoutId: layoutId,
+                              ),
+                        onSelected: _handleLayoutSelected,
+                      ),
                     },
                   ),
                 ),
@@ -261,7 +332,8 @@ class _CurrentTargetPickerSheetState
                   _PickerStage.layout => _PickerStage.variant,
                 },
                 clearVariant: _stage == _PickerStage.variant,
-                clearLayout: _stage == _PickerStage.variant ||
+                clearLayout:
+                    _stage == _PickerStage.variant ||
                     _stage == _PickerStage.layout,
               );
             },
@@ -285,10 +357,7 @@ class _CurrentTargetPickerSheetState
                 ),
                 onTapVariant: _profile == null
                     ? null
-                    : () => _setStage(
-                        _PickerStage.variant,
-                        clearLayout: true,
-                      ),
+                    : () => _setStage(_PickerStage.variant, clearLayout: true),
                 onTapLayout: _profile == null || _variant == null
                     ? null
                     : () => _setStage(_PickerStage.layout),
@@ -309,6 +378,96 @@ class _CurrentTargetPickerSheetState
       _filterQuery = '';
       _stage = _PickerStage.variant;
     });
+  }
+
+  Widget _buildCalibrationAction(BuildContext context) {
+    final icon = _startingCalibration
+        ? const SizedBox.square(
+            dimension: 16,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          )
+        : const Icon(Icons.tune_outlined, size: 18);
+    final compactStyle = ButtonStyle(
+      visualDensity: VisualDensity.compact,
+      padding: const WidgetStatePropertyAll(
+        EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      ),
+      minimumSize: const WidgetStatePropertyAll(Size.zero),
+      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+    );
+    final onPressed = _startingCalibration || _hasCalibration == null
+        ? null
+        : _calibrateCurrentTarget;
+
+    if (_hasCalibration == true) {
+      return TextButton.icon(
+        key: const ValueKey('calibrate-current-target'),
+        style: compactStyle.copyWith(
+          foregroundColor: WidgetStatePropertyAll(
+            Theme.of(context).colorScheme.outline,
+          ),
+        ),
+        onPressed: onPressed,
+        icon: icon,
+        label: const Text('重新校准'),
+      );
+    }
+    return FilledButton.tonalIcon(
+      key: const ValueKey('calibrate-current-target'),
+      style: compactStyle,
+      onPressed: onPressed,
+      icon: icon,
+      label: const Text('校准'),
+    );
+  }
+
+  Future<void> _loadCalibrationStatus() async {
+    final profile = _committedProfile;
+    final layout = _committedLayout;
+    if (profile == null || layout == null) {
+      return;
+    }
+    try {
+      final platform = await ref.read(calibrationPlatformProvider).getState();
+      final calibration = ref
+          .read(calibrationRepositoryProvider)
+          .load(
+            CalibrationKey(
+              profileId: profile.id,
+              layoutId: layout.id,
+              deviceId: platform.deviceId,
+            ),
+          );
+      if (mounted) {
+        setState(() => _hasCalibration = calibration != null);
+      }
+    } on Object {
+      if (mounted) {
+        setState(() => _hasCalibration = false);
+      }
+    }
+  }
+
+  Future<void> _calibrateCurrentTarget() async {
+    final profile = _committedProfile;
+    final layout = _committedLayout;
+    if (profile == null || layout == null) {
+      return;
+    }
+    setState(() => _startingCalibration = true);
+    final result = await launchCalibration(
+      context: context,
+      ref: ref,
+      profile: profile,
+      layout: layout,
+    );
+    if (mounted && result?.status == CalibrationSessionStatus.started) {
+      Navigator.of(context).pop();
+      return;
+    }
+    if (mounted) {
+      setState(() => _startingCalibration = false);
+    }
   }
 
   void _handleVariantSelected(InstrumentVariant variant) {
@@ -352,10 +511,7 @@ class _CurrentTargetPickerSheetState
     required String layoutId,
   }) {
     context.push(
-      LayoutPreviewRoute.location(
-        profileId: profile.id,
-        layoutId: layoutId,
-      ),
+      LayoutPreviewRoute.location(profileId: profile.id, layoutId: layoutId),
     );
   }
 
@@ -460,7 +616,10 @@ class _CurrentTargetPickerSheetState
         : profile.layoutById(preferredLayoutId);
     final binding =
         preferredBinding ??
-        profile.layouts.where((item) => item.isDefault).cast<LayoutBinding?>().firstOrNull ??
+        profile.layouts
+            .where((item) => item.isDefault)
+            .cast<LayoutBinding?>()
+            .firstOrNull ??
         (profile.layouts.isNotEmpty ? profile.layouts.first : null);
     if (binding == null) {
       return null;
@@ -472,6 +631,9 @@ class _CurrentTargetPickerSheetState
     }
   }
 }
+
+bool get _supportsAndroidCalibration =>
+    !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
 
 class _SummaryRow extends StatelessWidget {
   const _SummaryRow({
@@ -541,13 +703,13 @@ class _SummaryChip extends StatelessWidget {
     final foregroundColor = !enabled
         ? scheme.outline
         : selected
-            ? scheme.primary
-            : scheme.onSurfaceVariant;
+        ? scheme.primary
+        : scheme.onSurfaceVariant;
     final backgroundColor = !enabled
         ? scheme.surfaceContainerHighest.withValues(alpha: 0.45)
         : selected
-            ? scheme.primaryContainer
-            : scheme.surfaceContainerHigh;
+        ? scheme.primaryContainer
+        : scheme.surfaceContainerHigh;
 
     return ActionChip(
       key: chipKey,
@@ -565,7 +727,9 @@ class _SummaryChip extends StatelessWidget {
       ),
       backgroundColor: backgroundColor,
       side: BorderSide(
-        color: selected ? scheme.primary.withValues(alpha: 0.28) : Colors.transparent,
+        color: selected
+            ? scheme.primary.withValues(alpha: 0.28)
+            : Colors.transparent,
       ),
       onPressed: onTap,
     );

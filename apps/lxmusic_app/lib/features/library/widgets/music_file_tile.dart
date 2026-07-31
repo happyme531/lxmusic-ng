@@ -1,7 +1,9 @@
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:lxmusic_core/lxmusic_core.dart';
 
+import '../../calibration/calibration_launcher.dart';
 import '../../workbench/providers/workbench_provider.dart';
 import '../models/music_file.dart';
 import '../providers/music_library_provider.dart';
@@ -169,6 +171,17 @@ class MusicFileTile extends ConsumerWidget {
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text('已导出到 $outputPath')));
+    } on CalibrationExportException catch (error) {
+      if (!context.mounted) {
+        return;
+      }
+      await _showMissingCalibrationDialog(
+        context,
+        ref,
+        error,
+        profile!,
+        layout!,
+      );
     } catch (e) {
       if (!context.mounted) {
         return;
@@ -177,6 +190,41 @@ class MusicFileTile extends ConsumerWidget {
         context,
       ).showSnackBar(SnackBar(content: Text('导出失败: $e')));
     }
+  }
+
+  Future<void> _showMissingCalibrationDialog(
+    BuildContext context,
+    WidgetRef ref,
+    CalibrationExportException error,
+    GameProfile profile,
+    KeyLayout layout,
+  ) async {
+    final goToCalibration = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('需要键位校准'),
+        content: Text('$error\n\n完成校准后才能导出真实触控坐标。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('去校准'),
+          ),
+        ],
+      ),
+    );
+    if (!context.mounted || goToCalibration != true) {
+      return;
+    }
+    await launchCalibration(
+      context: context,
+      ref: ref,
+      profile: profile,
+      layout: layout,
+    );
   }
 
   String _extensionFor(String fileName, ExportFormat format) {

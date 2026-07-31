@@ -5,6 +5,7 @@ import 'package:lxmusic_core/lxmusic_core.dart';
 
 import '../../../core/service_locator.dart';
 import '../../../core/platform/file_store.dart';
+import '../../calibration/platform/calibration_platform.dart';
 import '../../workbench/models/song_config.dart';
 import '../../workbench/services/song_config_service.dart';
 import '../models/music_file.dart';
@@ -53,6 +54,7 @@ final songExportServiceProvider = Provider<SongExportService>((ref) {
   return SongExportService(
     songConfigService: ref.watch(songConfigServiceProvider),
     calibrationRepository: ref.watch(calibrationRepositoryProvider),
+    calibrationPlatform: ref.watch(calibrationPlatformProvider),
     fileStore: ref.watch(fileStoreProvider),
   );
 });
@@ -61,11 +63,13 @@ class SongExportService {
   const SongExportService({
     required this.songConfigService,
     required this.calibrationRepository,
+    required this.calibrationPlatform,
     required this.fileStore,
   });
 
   final SongConfigService songConfigService;
   final CalibrationRepository calibrationRepository;
+  final CalibrationPlatform calibrationPlatform;
   final PlatformFileStore fileStore;
 
   Future<PreparedSongExport> prepareExport({
@@ -106,6 +110,37 @@ class SongExportService {
         bytes = const MidiScoreEncoder().encode(transformed.score);
         break;
       case ExportFormat.executablePlanJson:
+        final platformState = await calibrationPlatform.getState();
+        if (!platformState.canCalibrate) {
+          throw const CalibrationUnavailableException(
+            '当前平台无法获取 Android 设备校准信息。',
+          );
+        }
+        final targetOrientation = platformState.targetOrientation;
+        if (targetOrientation == null ||
+            platformState.targetProfileId != profile.id ||
+            platformState.targetLayoutId != layout.id) {
+          throw TargetOrientationUnavailableException(
+            profileId: profile.id,
+            layoutId: layout.id,
+          );
+        }
+        final calibrationKey = CalibrationKey(
+          profileId: profile.id,
+          layoutId: layout.id,
+          deviceId: platformState.deviceId,
+        );
+        final calibration = calibrationRepository.load(calibrationKey);
+        if (calibration == null) {
+          throw MissingCalibrationException(calibrationKey);
+        }
+        if (calibration.orientation != targetOrientation) {
+          throw CalibrationOrientationMismatchException(
+            key: calibrationKey,
+            calibrationOrientation: calibration.orientation,
+            targetOrientation: targetOrientation,
+          );
+        }
         final semanticPlan = const PerformancePlanner().plan(
           transformed.score,
           PlanningContext(
@@ -115,28 +150,16 @@ class SongExportService {
             customPitchToKeyId: resolveCustomPitchToKeyId(config.steps),
           ),
         );
-        final calibration = calibrationRepository.load(
-          CalibrationKey(
-            profileId: profile.id,
-            layoutId: layout.id,
-            deviceId: 'default-device',
-            orientation: 'portrait',
-          ),
-        );
         final executablePlan = const BackendCompiler().compile(
           semanticPlan,
           BackendContext(
             constraints: const BackendConstraints(
-              backendId: 'preview',
+              backendId: 'android-accessibility',
               supportsHold: true,
               maxSimultaneousTouches: 5,
               minTapGapMs: 8,
               gestureBatchWindowMs: 32,
-              supportedKinds: <String>{
-                'touchGesture',
-                'touchPoints',
-                'overlayHint',
-              },
+              supportedKinds: <String>{'touchGesture', 'touchPoints'},
             ),
             calibration: calibration,
             layout: layout,
@@ -212,4 +235,78 @@ class SongExportService {
     }
     return candidate;
   }
+}
+
+abstract class CalibrationExportException implements Exception {
+  const CalibrationExportException();
+
+  String get profileId;
+  String get layoutId;
+}
+
+class MissingCalibrationException extends CalibrationExportException {
+  const MissingCalibrationException(this.key);
+
+  final CalibrationKey key;
+
+  @override
+  String get profileId => key.profileId;
+
+  @override
+  String get layoutId => key.layoutId;
+
+  @override
+  String toString() => '当前设备缺少 ${key.profileId} / ${key.layoutId} 的键位校准。';
+}
+
+class CalibrationOrientationMismatchException
+    extends CalibrationExportException {
+  const CalibrationOrientationMismatchException({
+    required this.key,
+    required this.calibrationOrientation,
+    required this.targetOrientation,
+  });
+
+  final CalibrationKey key;
+  final String calibrationOrientation;
+  final String targetOrientation;
+
+  @override
+  String get profileId => key.profileId;
+
+  @override
+  String get layoutId => key.layoutId;
+
+  @override
+  String toString() {
+    final calibrated = calibrationOrientation == 'landscape' ? '横屏' : '竖屏';
+    final current = targetOrientation == 'landscape' ? '横屏' : '竖屏';
+    return '当前键位上次在$calibrated下校准，目标游戏现为$current。'
+        '请重新校准，新结果会覆盖旧校准。';
+  }
+}
+
+class TargetOrientationUnavailableException extends CalibrationExportException {
+  const TargetOrientationUnavailableException({
+    required this.profileId,
+    required this.layoutId,
+  });
+
+  @override
+  final String profileId;
+
+  @override
+  final String layoutId;
+
+  @override
+  String toString() => '还没有从目标游戏内确认横竖屏方向，请先完成一次键位校准。';
+}
+
+class CalibrationUnavailableException implements Exception {
+  const CalibrationUnavailableException(this.message);
+
+  final String message;
+
+  @override
+  String toString() => message;
 }

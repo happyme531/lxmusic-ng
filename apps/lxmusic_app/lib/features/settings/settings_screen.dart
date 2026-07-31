@@ -45,27 +45,6 @@ class SettingsScreen extends ConsumerWidget {
           ),
           const Divider(),
 
-          // Calibrations section (placeholder)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
-            child: Text(
-              '校准',
-              style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                color: Theme.of(context).colorScheme.primary,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-          ),
-          ListTile(
-            leading: const Icon(Icons.tune_outlined),
-            title: const Text('键位校准管理'),
-            subtitle: const Text('Phase 4 实现'),
-            trailing: const Icon(Icons.chevron_right),
-            enabled: false,
-            onTap: () {},
-          ),
-          const Divider(),
-
           // About section
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),

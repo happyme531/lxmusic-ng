@@ -236,23 +236,61 @@ class CalibrationKey {
     required this.profileId,
     required this.layoutId,
     required this.deviceId,
-    required this.orientation,
   });
 
   final String profileId;
   final String layoutId;
   final String deviceId;
-  final String orientation;
 
-  String get fileStem =>
-      '$profileId'
-      '__$layoutId'
-      '__$orientation';
+  String get fileStem => '${profileId}__$layoutId';
+
+  String get storageKey => '$deviceId/$profileId/$layoutId';
+
+  factory CalibrationKey.fromJson(Map<String, Object?> json) {
+    final key = CalibrationKey(
+      profileId: _calibrationString(json, 'profileId'),
+      layoutId: _calibrationString(json, 'layoutId'),
+      deviceId: _calibrationString(json, 'deviceId'),
+    );
+    key.validate();
+    return key;
+  }
+
+  void validate() {
+    if (profileId.trim().isEmpty ||
+        layoutId.trim().isEmpty ||
+        deviceId.trim().isEmpty) {
+      throw const CalibrationFormatException(
+        'invalid_key',
+        'Calibration key fields must not be empty.',
+      );
+    }
+  }
+
+  Map<String, Object?> toJson() {
+    return <String, Object?>{
+      'profileId': profileId,
+      'layoutId': layoutId,
+      'deviceId': deviceId,
+    };
+  }
+
+  @override
+  bool operator ==(Object other) {
+    return other is CalibrationKey &&
+        other.profileId == profileId &&
+        other.layoutId == layoutId &&
+        other.deviceId == deviceId;
+  }
+
+  @override
+  int get hashCode => Object.hash(profileId, layoutId, deviceId);
 }
 
 class Calibration {
   const Calibration({
     required this.key,
+    required this.orientation,
     required this.leftTopPx,
     required this.rightBottomPx,
     required this.capturedAt,
@@ -261,18 +299,141 @@ class Calibration {
   });
 
   final CalibrationKey key;
+  final String orientation;
   final (double x, double y) leftTopPx;
   final (double x, double y) rightBottomPx;
   final ({double left, double top, double right, double bottom})? viewportPx;
   final DateTime capturedAt;
   final Map<String, Object?> metadata;
 
+  static const int schemaVersion = 1;
+  static const Set<String> supportedOrientations = <String>{
+    'portrait',
+    'landscape',
+  };
+
+  factory Calibration.fromJson(
+    Map<String, Object?> json, {
+    CalibrationKey? fallbackKey,
+  }) {
+    final rawVersion = json['schemaVersion'];
+    if (rawVersion != null && rawVersion != schemaVersion) {
+      throw CalibrationFormatException(
+        'unsupported_schema',
+        'Unsupported calibration schema version "$rawVersion".',
+      );
+    }
+
+    final parsedKey = _hasCalibrationKeyFields(json)
+        ? CalibrationKey.fromJson(json)
+        : fallbackKey;
+    if (parsedKey == null) {
+      throw const CalibrationFormatException(
+        'missing_key',
+        'Calibration key fields are missing.',
+      );
+    }
+    parsedKey.validate();
+    if (fallbackKey != null && parsedKey != fallbackKey) {
+      throw const CalibrationFormatException(
+        'key_mismatch',
+        'Calibration key does not match its storage location.',
+      );
+    }
+
+    final capturedAtText = _calibrationString(json, 'capturedAt');
+    final capturedAt = DateTime.tryParse(capturedAtText);
+    if (capturedAt == null) {
+      throw CalibrationFormatException(
+        'invalid_captured_at',
+        'Invalid calibration capturedAt "$capturedAtText".',
+      );
+    }
+    final rawMetadata = json['metadata'];
+    if (rawMetadata != null && rawMetadata is! Map) {
+      throw const CalibrationFormatException(
+        'invalid_metadata',
+        'Calibration metadata must be an object.',
+      );
+    }
+
+    final calibration = Calibration(
+      key: parsedKey,
+      orientation: _calibrationString(json, 'orientation'),
+      leftTopPx: _calibrationPoint(json, 'leftTop'),
+      rightBottomPx: _calibrationPoint(json, 'rightBottom'),
+      viewportPx: _calibrationViewport(json['viewport']),
+      capturedAt: capturedAt,
+      metadata: rawMetadata == null
+          ? const <String, Object?>{}
+          : Map<String, Object?>.from(
+              (rawMetadata as Map<Object?, Object?>).map(
+                (key, value) => MapEntry(key.toString(), value),
+              ),
+            ),
+    );
+    calibration.validate();
+    return calibration;
+  }
+
+  void validate() {
+    key.validate();
+    if (!supportedOrientations.contains(orientation)) {
+      throw CalibrationFormatException(
+        'invalid_orientation',
+        'Unsupported calibration orientation "$orientation".',
+      );
+    }
+    final values = <double>[
+      leftTopPx.$1,
+      leftTopPx.$2,
+      rightBottomPx.$1,
+      rightBottomPx.$2,
+      if (viewportPx != null) ...<double>[
+        viewportPx!.left,
+        viewportPx!.top,
+        viewportPx!.right,
+        viewportPx!.bottom,
+      ],
+    ];
+    if (values.any((value) => !value.isFinite)) {
+      throw const CalibrationFormatException(
+        'non_finite_coordinate',
+        'Calibration coordinates must be finite numbers.',
+      );
+    }
+    if (leftTopPx.$1 >= rightBottomPx.$1 || leftTopPx.$2 >= rightBottomPx.$2) {
+      throw const CalibrationFormatException(
+        'invalid_rectangle',
+        'Calibration rectangle must have positive width and height.',
+      );
+    }
+    final viewport = viewportPx;
+    if (viewport == null) {
+      return;
+    }
+    if (viewport.left >= viewport.right || viewport.top >= viewport.bottom) {
+      throw const CalibrationFormatException(
+        'invalid_viewport',
+        'Calibration viewport must have positive width and height.',
+      );
+    }
+    if (leftTopPx.$1 < viewport.left ||
+        leftTopPx.$2 < viewport.top ||
+        rightBottomPx.$1 > viewport.right ||
+        rightBottomPx.$2 > viewport.bottom) {
+      throw const CalibrationFormatException(
+        'outside_viewport',
+        'Calibration rectangle must be inside the viewport.',
+      );
+    }
+  }
+
   Map<String, Object?> toJson() {
     return <String, Object?>{
-      'profileId': key.profileId,
-      'layoutId': key.layoutId,
-      'deviceId': key.deviceId,
-      'orientation': key.orientation,
+      'schemaVersion': schemaVersion,
+      ...key.toJson(),
+      'orientation': orientation,
       'leftTop': <double>[leftTopPx.$1, leftTopPx.$2],
       'rightBottom': <double>[rightBottomPx.$1, rightBottomPx.$2],
       'viewport': viewportPx == null
@@ -287,4 +448,71 @@ class Calibration {
       'metadata': metadata,
     };
   }
+}
+
+class CalibrationFormatException extends FormatException {
+  const CalibrationFormatException(this.code, String message) : super(message);
+
+  final String code;
+
+  @override
+  String toString() => 'CalibrationFormatException($code): $message';
+}
+
+bool _hasCalibrationKeyFields(Map<String, Object?> json) {
+  return json.containsKey('profileId') ||
+      json.containsKey('layoutId') ||
+      json.containsKey('deviceId');
+}
+
+String _calibrationString(Map<String, Object?> json, String key) {
+  final value = json[key];
+  if (value is! String || value.trim().isEmpty) {
+    throw CalibrationFormatException(
+      'invalid_$key',
+      'Calibration field "$key" must be a non-empty string.',
+    );
+  }
+  return value;
+}
+
+(double, double) _calibrationPoint(Map<String, Object?> json, String key) {
+  final value = json[key];
+  if (value is! List || value.length != 2) {
+    throw CalibrationFormatException(
+      'invalid_$key',
+      'Calibration field "$key" must contain exactly two numbers.',
+    );
+  }
+  final x = value[0];
+  final y = value[1];
+  if (x is! num || y is! num) {
+    throw CalibrationFormatException(
+      'invalid_$key',
+      'Calibration field "$key" must contain exactly two numbers.',
+    );
+  }
+  return (x.toDouble(), y.toDouble());
+}
+
+({double left, double top, double right, double bottom})? _calibrationViewport(
+  Object? value,
+) {
+  if (value == null) {
+    return null;
+  }
+  if (value is! List ||
+      value.length != 4 ||
+      value.any((item) => item is! num)) {
+    throw const CalibrationFormatException(
+      'invalid_viewport',
+      'Calibration viewport must contain exactly four numbers.',
+    );
+  }
+  return (
+    left: (value[0] as num).toDouble(),
+    top: (value[1] as num).toDouble(),
+    right: (value[2] as num).toDouble(),
+    bottom: (value[3] as num).toDouble(),
+  );
 }

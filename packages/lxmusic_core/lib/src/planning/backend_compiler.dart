@@ -1,6 +1,7 @@
 import '../domain/game_profile.dart';
 import '../domain/executable_plan.dart';
 import '../domain/semantic_plan.dart';
+import 'calibration_geometry.dart';
 import 'execution_context.dart';
 
 class BackendCompiler {
@@ -364,10 +365,6 @@ class BackendCompiler {
   }) {
     final layout = context.layout!;
     final calibration = context.calibration!;
-    final left = calibration.leftTopPx.$1;
-    final top = calibration.leftTopPx.$2;
-    final width = calibration.rightBottomPx.$1 - left;
-    final height = calibration.rightBottomPx.$2 - top;
     final points = <Map<String, Object?>>[];
     var durationMs = 0;
 
@@ -376,12 +373,15 @@ class BackendCompiler {
       if (definition == null) {
         continue;
       }
-      final x = left + width * definition.normX;
-      final y = top + height * definition.normY;
+      final mapped = CalibrationGeometry.mapNormalized(
+        calibration,
+        normX: definition.normX,
+        normY: definition.normY,
+      );
       final point = <String, Object?>{
         'keyId': key.keyId,
-        'x': x,
-        'y': y,
+        'x': mapped.x,
+        'y': mapped.y,
         'delayMs': key.atMs - batch.atMs,
       };
       if (kind == ExecutableActionKind.touchGesture) {

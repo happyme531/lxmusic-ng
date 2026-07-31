@@ -14,14 +14,14 @@ Future<void> main() async {
   final bundle = await loadBundledYamlAssets();
   final prefs = await SharedPreferences.getInstance();
   final persistedTarget = TargetSelectionPersistence.fromPrefs(prefs);
-  final persistedProfileUsage = TargetSelectionPersistence.profileUsageFromPrefs(
-    prefs,
-  );
+  final persistedProfileUsage =
+      TargetSelectionPersistence.profileUsageFromPrefs(prefs);
 
   runApp(
     ProviderScope(
       overrides: [
         assetBundleProvider.overrideWithValue(bundle),
+        sharedPreferencesProvider.overrideWithValue(prefs),
         persistedTargetSelectionProvider.overrideWithValue(persistedTarget),
         initialPersistedProfileUsageProvider.overrideWithValue(
           persistedProfileUsage,

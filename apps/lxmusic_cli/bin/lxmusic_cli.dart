@@ -430,14 +430,16 @@ Future<void> _runConvert(ArgResults command) async {
   if (outputFormat == 'executable-plan-json') {
     final deviceId = command['device'] as String;
     final orientation = command['orientation'] as String;
-    final calibration = calibrationRepo.load(
+    final storedCalibration = calibrationRepo.load(
       CalibrationKey(
         profileId: target.profile.id,
         layoutId: target.layout.id,
         deviceId: deviceId,
-        orientation: orientation,
       ),
     );
+    final calibration = storedCalibration?.orientation == orientation
+        ? storedCalibration
+        : null;
     final executablePlan = const BackendCompiler().compile(
       semanticPlan,
       BackendContext(

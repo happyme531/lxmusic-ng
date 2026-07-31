@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../core/platform/file_store.dart';
+import '../calibration/calibration_launcher.dart';
 import '../workbench/widgets/current_target_action.dart';
 import '../workbench/providers/workbench_provider.dart';
 import 'models/music_file.dart';
@@ -663,6 +664,36 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
       }
       messenger.showSnackBar(
         SnackBar(content: Text('已下载 ${outputs.length} 个导出文件')),
+      );
+    } on CalibrationExportException catch (error) {
+      if (!context.mounted) {
+        return;
+      }
+      final goToCalibration = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('需要键位校准'),
+          content: Text('$error\n\n批量导出已在打开目录选择器前停止。'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: const Text('去校准'),
+            ),
+          ],
+        ),
+      );
+      if (!context.mounted || goToCalibration != true) {
+        return;
+      }
+      await launchCalibration(
+        context: context,
+        ref: ref,
+        profile: profile!,
+        layout: layout!,
       );
     } catch (e) {
       if (!context.mounted) {

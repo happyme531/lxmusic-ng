@@ -12,6 +12,7 @@ export 'src/parsing/parsers/midi_score_parser.dart';
 export 'src/parsing/parsers/skystudio_json_score_parser.dart';
 export 'src/parsing/parsers/tonejs_json_score_parser.dart';
 export 'src/planning/backend_compiler.dart';
+export 'src/planning/calibration_geometry.dart';
 export 'src/planning/performance_analysis.dart';
 export 'src/planning/execution_context.dart';
 export 'src/planning/performance_planner.dart';

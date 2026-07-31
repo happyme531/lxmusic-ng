@@ -375,6 +375,29 @@ pipeline:
         isNot(contains('not directly executable')),
       );
     });
+
+    test('orientation mismatch does not reuse the only calibration', () async {
+      final result = await _runCli(<String>[
+        'convert',
+        '--input',
+        _workspacePath('examples/domiso/scale.dms.txt'),
+        '--profile',
+        'generic_demo',
+        '--output-format',
+        'executable-plan-json',
+        '--orientation',
+        'landscape',
+      ]);
+
+      expect(result.exitCode, 0, reason: result.stderr as String);
+      final output = Map<String, Object?>.from(
+        jsonDecode(result.stdout as String) as Map,
+      );
+      final actions = (output['actions'] as List).cast<Map>();
+      expect(actions, isNotEmpty);
+      expect(actions.first['kind'], 'overlayHint');
+      expect(result.stderr as String, contains('not directly executable'));
+    });
   });
 }
 
