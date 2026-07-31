@@ -19,6 +19,13 @@ class KeyLayoutPreviewCanvas extends StatelessWidget {
   final String? selectedKeyId;
   final ValueChanged<KeyDefinition>? onKeyTap;
 
+  static double estimatedHeightFor(KeyLayout layout) {
+    if (layout.keys.isEmpty) {
+      return 240;
+    }
+    return _LayoutPreviewMetrics.fromKeys(layout.keys).estimatedHeight;
+  }
+
   @override
   Widget build(BuildContext context) {
     if (layout.keys.isEmpty) {
@@ -26,9 +33,7 @@ class KeyLayoutPreviewCanvas extends StatelessWidget {
         decoration: _boardDecoration(context),
         child: const SizedBox(
           height: 240,
-          child: Center(
-            child: Text('这个键位没有可预览的按键'),
-          ),
+          child: Center(child: Text('这个键位没有可预览的按键')),
         ),
       );
     }
@@ -37,11 +42,10 @@ class KeyLayoutPreviewCanvas extends StatelessWidget {
       builder: (context, constraints) {
         final metrics = _LayoutPreviewMetrics.fromKeys(layout.keys);
         final width = constraints.maxWidth;
-        final height = metrics.estimatedHeight;
-        final keySize = metrics.keySizeFor(
-          width: width,
-          height: height,
-        );
+        final height = constraints.hasBoundedHeight
+            ? constraints.maxHeight
+            : estimatedHeightFor(layout);
+        final keySize = metrics.keySizeFor(width: width, height: height);
         final horizontalPadding = keySize * 0.9;
         final verticalPadding = keySize * 0.9;
         final innerWidth = math.max(1.0, width - horizontalPadding * 2);
@@ -55,20 +59,18 @@ class KeyLayoutPreviewCanvas extends StatelessWidget {
               children: [
                 Positioned.fill(
                   child: CustomPaint(
-                    painter: _BoardGuidesPainter(
-                      rowCount: metrics.rowCount,
-                    ),
+                    painter: _BoardGuidesPainter(rowCount: metrics.rowCount),
                   ),
                 ),
                 for (final key in layout.keys)
                   Positioned(
                     key: ValueKey('layout-key-${key.id}'),
-                    left: horizontalPadding +
+                    left:
+                        horizontalPadding +
                         key.normX * innerWidth -
                         keySize / 2,
-                    top: verticalPadding +
-                        key.normY * innerHeight -
-                        keySize / 2,
+                    top:
+                        verticalPadding + key.normY * innerHeight - keySize / 2,
                     width: keySize,
                     height: keySize,
                     child: _PreviewKeyNode(
@@ -85,6 +87,7 @@ class KeyLayoutPreviewCanvas extends StatelessWidget {
       },
     );
   }
+
   BoxDecoration _boardDecoration(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     return BoxDecoration(
@@ -92,14 +95,9 @@ class KeyLayoutPreviewCanvas extends StatelessWidget {
       gradient: LinearGradient(
         begin: Alignment.topLeft,
         end: Alignment.bottomRight,
-        colors: <Color>[
-          scheme.surface,
-          scheme.surfaceContainerHighest,
-        ],
+        colors: <Color>[scheme.surface, scheme.surfaceContainerHighest],
       ),
-      border: Border.all(
-        color: scheme.outlineVariant,
-      ),
+      border: Border.all(color: scheme.outlineVariant),
       boxShadow: <BoxShadow>[
         BoxShadow(
           color: scheme.shadow.withValues(alpha: 0.06),
@@ -150,7 +148,9 @@ class _PreviewKeyNode extends StatelessWidget {
               ),
               boxShadow: <BoxShadow>[
                 BoxShadow(
-                  color: scheme.shadow.withValues(alpha: selected ? 0.12 : 0.05),
+                  color: scheme.shadow.withValues(
+                    alpha: selected ? 0.12 : 0.05,
+                  ),
                   blurRadius: selected ? 18 : 8,
                   offset: const Offset(0, 4),
                 ),
@@ -173,40 +173,25 @@ class _PreviewKeyNode extends StatelessWidget {
       return Text(
         keyDefinition.id,
         textAlign: TextAlign.center,
-        style: TextStyle(
-          color: foreground,
-          fontWeight: FontWeight.w700,
-        ),
+        style: TextStyle(color: foreground, fontWeight: FontWeight.w700),
       );
     }
 
     if (config.labelMode == LayoutLabelMode.numbered) {
       final label = LayoutKeyLabelFormatter.describeNumbered(pitch);
-      return _NumberedPitchLabelView(
-        label: label,
-        color: foreground,
-      );
+      return _NumberedPitchLabelView(label: label, color: foreground);
     }
 
     return Text(
-      LayoutKeyLabelFormatter.format(
-        pitch: pitch,
-        mode: config.labelMode,
-      ),
+      LayoutKeyLabelFormatter.format(pitch: pitch, mode: config.labelMode),
       textAlign: TextAlign.center,
-      style: TextStyle(
-        color: foreground,
-        fontWeight: FontWeight.w700,
-      ),
+      style: TextStyle(color: foreground, fontWeight: FontWeight.w700),
     );
   }
 }
 
 class _NumberedPitchLabelView extends StatelessWidget {
-  const _NumberedPitchLabelView({
-    required this.label,
-    required this.color,
-  });
+  const _NumberedPitchLabelView({required this.label, required this.color});
 
   final NumberedPitchLabel label;
   final Color color;
@@ -215,11 +200,7 @@ class _NumberedPitchLabelView extends StatelessWidget {
   Widget build(BuildContext context) {
     const dot = '•';
     return DefaultTextStyle(
-      style: TextStyle(
-        color: color,
-        fontWeight: FontWeight.w700,
-        height: 1,
-      ),
+      style: TextStyle(color: color, fontWeight: FontWeight.w700, height: 1),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -306,10 +287,7 @@ class _LayoutPreviewMetrics {
 
   double get estimatedHeight => (rowCount * 88.0).clamp(220.0, 420.0);
 
-  double keySizeFor({
-    required double width,
-    required double height,
-  }) {
+  double keySizeFor({required double width, required double height}) {
     final widthBased = width / (columnCount + 1) * 0.68;
     final heightBased = height / (rowCount + 1) * 0.72;
     return math.min(widthBased, heightBased).clamp(16.0, 52.0);

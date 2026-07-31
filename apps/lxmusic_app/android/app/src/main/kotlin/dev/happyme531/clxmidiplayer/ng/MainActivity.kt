@@ -77,12 +77,16 @@ class MainActivity : FlutterActivity() {
             "viewportHeightPx" to display.heightPx,
             "density" to display.density,
             "displayRotation" to display.rotation,
+            "orientationLockSupported" to supportsOrientationLock(),
             "targetOrientation" to preferences.getString(LAST_TARGET_ORIENTATION_KEY, null),
             "targetProfileId" to preferences.getString(LAST_TARGET_PROFILE_ID_KEY, null),
             "targetLayoutId" to preferences.getString(LAST_TARGET_LAYOUT_ID_KEY, null),
             "activeSessionId" to LxMusicAccessibilityService.activeSessionId(),
         )
     }
+
+    private fun supportsOrientationLock(): Boolean =
+        Build.VERSION.SDK_INT < 36 || resources.configuration.smallestScreenWidthDp < 600
 
     private fun isCalibrationServiceEnabled(): Boolean {
         val expected = ComponentName(this, LxMusicAccessibilityService::class.java)

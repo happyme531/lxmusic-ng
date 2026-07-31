@@ -12,6 +12,7 @@ class CalibrationPlatformState {
     required this.viewportHeightPx,
     required this.density,
     required this.displayRotation,
+    this.orientationLockSupported = true,
     this.targetOrientation,
     this.targetProfileId,
     this.targetLayoutId,
@@ -27,6 +28,7 @@ class CalibrationPlatformState {
   final double viewportHeightPx;
   final double density;
   final int displayRotation;
+  final bool orientationLockSupported;
   final String? targetOrientation;
   final String? targetProfileId;
   final String? targetLayoutId;
@@ -45,6 +47,7 @@ class CalibrationPlatformState {
       viewportHeightPx: (map['viewportHeightPx'] as num?)?.toDouble() ?? 0,
       density: (map['density'] as num?)?.toDouble() ?? 1,
       displayRotation: (map['displayRotation'] as num?)?.toInt() ?? 0,
+      orientationLockSupported: map['orientationLockSupported'] == true,
       targetOrientation: map['targetOrientation'] as String?,
       targetProfileId: map['targetProfileId'] as String?,
       targetLayoutId: map['targetLayoutId'] as String?,

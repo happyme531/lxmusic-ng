@@ -1,11 +1,24 @@
-import 'package:flutter/gestures.dart';
+import 'dart:async';
+import 'dart:math' as math;
+
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:lxmusic_core/lxmusic_core.dart';
 
 import '../../core/service_locator.dart';
 import 'layout_key_label_formatter.dart';
 import 'widgets/key_layout_preview_canvas.dart';
+
+final layoutPreviewOrientationSupportedProvider =
+    FutureProvider.autoDispose<bool>((ref) async {
+      if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) {
+        return false;
+      }
+      return (await ref.watch(calibrationPlatformProvider).getState())
+          .orientationLockSupported;
+    });
 
 class LayoutPreviewScreen extends ConsumerStatefulWidget {
   const LayoutPreviewScreen({
@@ -26,7 +39,7 @@ class LayoutPreviewScreen extends ConsumerStatefulWidget {
 
 class _LayoutPreviewScreenState extends ConsumerState<LayoutPreviewScreen> {
   LayoutLabelMode _labelMode = LayoutLabelMode.numbered;
-  final ScrollController _horizontalScrollController = ScrollController();
+  bool _hasOrientationOverride = false;
   String? _selectedKeyId;
 
   @override
@@ -48,7 +61,11 @@ class _LayoutPreviewScreenState extends ConsumerState<LayoutPreviewScreen> {
 
   @override
   void dispose() {
-    _horizontalScrollController.dispose();
+    if (_hasOrientationOverride) {
+      unawaited(
+        SystemChrome.setPreferredOrientations(const <DeviceOrientation>[]),
+      );
+    }
     super.dispose();
   }
 
@@ -73,6 +90,10 @@ class _LayoutPreviewScreenState extends ConsumerState<LayoutPreviewScreen> {
     // presenting effective pitches here; this screen currently documents the
     // nominal physical layout only.
     final displayConfig = LayoutPreviewDisplayConfig(labelMode: _labelMode);
+    final isLandscapePreview =
+        MediaQuery.orientationOf(context) == Orientation.landscape;
+    final supportsOrientationToggle =
+        ref.watch(layoutPreviewOrientationSupportedProvider).value ?? false;
 
     return Scaffold(
       appBar: AppBar(
@@ -90,6 +111,21 @@ class _LayoutPreviewScreenState extends ConsumerState<LayoutPreviewScreen> {
             ),
           ],
         ),
+        actions: [
+          if (supportsOrientationToggle) ...[
+            TextButton.icon(
+              key: const ValueKey('layout-preview-orientation-toggle'),
+              onPressed: () => _togglePreviewOrientation(isLandscapePreview),
+              icon: Icon(
+                isLandscapePreview
+                    ? Icons.stay_current_portrait_rounded
+                    : Icons.stay_current_landscape_rounded,
+              ),
+              label: Text(isLandscapePreview ? '竖屏' : '横屏'),
+            ),
+            const SizedBox(width: 8),
+          ],
+        ],
       ),
       body: LayoutBuilder(
         builder: (context, constraints) {
@@ -161,34 +197,16 @@ class _LayoutPreviewScreenState extends ConsumerState<LayoutPreviewScreen> {
                                   ),
                             ),
                             const SizedBox(height: 18),
-                            ScrollConfiguration(
-                              behavior: const _PreviewScrollBehavior(),
-                              child: Scrollbar(
-                                controller: _horizontalScrollController,
-                                thumbVisibility: true,
-                                interactive: true,
-                                notificationPredicate: (notification) {
-                                  return notification.metrics.axis ==
-                                      Axis.horizontal;
-                                },
-                                child: SingleChildScrollView(
-                                  controller: _horizontalScrollController,
-                                  scrollDirection: Axis.horizontal,
-                                  child: SizedBox(
-                                    width: previewWidth,
-                                    child: KeyLayoutPreviewCanvas(
-                                      layout: layout,
-                                      config: displayConfig,
-                                      selectedKeyId: selectedKey?.id,
-                                      onKeyTap: (key) {
-                                        setState(() {
-                                          _selectedKeyId = key.id;
-                                        });
-                                      },
-                                    ),
-                                  ),
-                                ),
-                              ),
+                            _FittedLayoutPreview(
+                              naturalWidth: previewWidth,
+                              layout: layout,
+                              config: displayConfig,
+                              selectedKeyId: selectedKey?.id,
+                              onKeyTap: (key) {
+                                setState(() {
+                                  _selectedKeyId = key.id;
+                                });
+                              },
                             ),
                           ],
                         ),
@@ -235,6 +253,37 @@ class _LayoutPreviewScreenState extends ConsumerState<LayoutPreviewScreen> {
     return selected ?? layout.keys.first;
   }
 
+  Future<void> _togglePreviewOrientation(bool isLandscapePreview) async {
+    final requestLandscape = !isLandscapePreview;
+    setState(() {
+      _hasOrientationOverride = true;
+    });
+
+    try {
+      await SystemChrome.setPreferredOrientations(
+        requestLandscape
+            ? const <DeviceOrientation>[
+                DeviceOrientation.landscapeLeft,
+                DeviceOrientation.landscapeRight,
+              ]
+            : const <DeviceOrientation>[
+                DeviceOrientation.portraitUp,
+                DeviceOrientation.portraitDown,
+              ],
+      );
+    } on PlatformException {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _hasOrientationOverride = false;
+      });
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('当前设备无法切换预览方向')));
+    }
+  }
+
   double _previewWidthFor(double viewportWidth, List<KeyDefinition> keys) {
     final columnCount = _clusterCount(keys.map((key) => key.normX));
     final widthFactor = mathFactorForColumns(columnCount);
@@ -262,14 +311,52 @@ class _LayoutPreviewScreenState extends ConsumerState<LayoutPreviewScreen> {
   }
 }
 
-class _PreviewScrollBehavior extends MaterialScrollBehavior {
-  const _PreviewScrollBehavior();
+class _FittedLayoutPreview extends StatelessWidget {
+  const _FittedLayoutPreview({
+    required this.naturalWidth,
+    required this.layout,
+    required this.config,
+    required this.selectedKeyId,
+    required this.onKeyTap,
+  });
+
+  final double naturalWidth;
+  final KeyLayout layout;
+  final LayoutPreviewDisplayConfig config;
+  final String? selectedKeyId;
+  final ValueChanged<KeyDefinition> onKeyTap;
 
   @override
-  Set<PointerDeviceKind> get dragDevices => <PointerDeviceKind>{
-    ...super.dragDevices,
-    PointerDeviceKind.mouse,
-  };
+  Widget build(BuildContext context) {
+    const landscapeAspectRatio = 16 / 9;
+    final naturalHeight = naturalWidth / landscapeAspectRatio;
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final scale = math.min(1.0, constraints.maxWidth / naturalWidth);
+        return SizedBox(
+          key: const ValueKey('layout-preview-fit-frame'),
+          width: constraints.maxWidth,
+          height: naturalHeight * scale,
+          child: FittedBox(
+            key: const ValueKey('layout-preview-fitted-box'),
+            fit: BoxFit.scaleDown,
+            alignment: Alignment.topCenter,
+            child: SizedBox(
+              key: const ValueKey('layout-preview-natural-canvas'),
+              width: naturalWidth,
+              height: naturalHeight,
+              child: KeyLayoutPreviewCanvas(
+                layout: layout,
+                config: config,
+                selectedKeyId: selectedKeyId,
+                onKeyTap: onKeyTap,
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
 }
 
 class _SelectedKeyCard extends StatelessWidget {
