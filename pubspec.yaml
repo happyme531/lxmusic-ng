@@ -12,3 +12,4 @@ workspace:
   - apps/lxmusic_cli
   - packages/lxmusic_assets
   - packages/lxmusic_core
+  - packages/flutter_onnxruntime

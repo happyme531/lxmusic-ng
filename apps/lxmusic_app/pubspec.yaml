@@ -44,7 +44,13 @@ dependencies:
   go_router: ^17.2.0
 
   # File & storage
+  audio_decoder: ^0.8.1
+  crypto: ^3.0.6
+  fftea: ^1.5.0+1
   file_picker: ^11.0.2
+  flutter_onnxruntime:
+    path: ../../packages/flutter_onnxruntime
+  path: ^1.9.1
   path_provider: ^2.1.5
   shared_preferences: ^2.5.5
   flutter_soloud: ^4.0.2
