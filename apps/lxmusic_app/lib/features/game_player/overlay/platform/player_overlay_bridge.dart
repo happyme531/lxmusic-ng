@@ -18,6 +18,8 @@ abstract interface class PlayerOverlayBridge {
 
   Future<void> setResizeMode(bool enabled);
 
+  Future<void> setTextInputActive(bool active);
+
   Future<void> setTargetPickerActive(bool active);
 
   Future<Map<String, Object?>> sendAction(Map<String, Object?> action);
@@ -84,6 +86,13 @@ class MethodChannelPlayerOverlayBridge implements PlayerOverlayBridge {
   Future<void> setResizeMode(bool enabled) {
     return channel.invokeMethod<void>('setResizeMode', <String, Object?>{
       'enabled': enabled,
+    });
+  }
+
+  @override
+  Future<void> setTextInputActive(bool active) {
+    return channel.invokeMethod<void>('setTextInputActive', <String, Object?>{
+      'active': active,
     });
   }
 

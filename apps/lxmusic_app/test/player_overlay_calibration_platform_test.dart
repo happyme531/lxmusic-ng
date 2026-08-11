@@ -110,6 +110,9 @@ class _CalibrationBridge implements PlayerOverlayBridge {
   Future<void> setResizeMode(bool enabled) async {}
 
   @override
+  Future<void> setTextInputActive(bool active) async {}
+
+  @override
   Future<void> setTargetPickerActive(bool active) async {}
 
   @override

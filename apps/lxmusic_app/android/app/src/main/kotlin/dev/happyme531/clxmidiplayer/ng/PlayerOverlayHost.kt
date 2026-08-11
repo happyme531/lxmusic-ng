@@ -41,6 +41,7 @@ internal class PlayerOverlayHost(
     private var session: Map<String, Any?> = defaultSession()
     private var resizeModeEnabled = false
     private var targetPickerActive = false
+    private var textInputActive = false
     private var windowAttached = false
     private var windowMode = WindowMode.compact
     private var dockedSide: DockSide? = null
@@ -72,6 +73,7 @@ internal class PlayerOverlayHost(
         windowMode = WindowMode.compact
         resizeModeEnabled = false
         targetPickerActive = false
+        textInputActive = false
         dockedSide = null
         preDockWindowState = null
         val safeBounds = normalWindowBounds()
@@ -275,6 +277,12 @@ internal class PlayerOverlayHost(
             "setTargetPickerActive" -> {
                 val arguments = call.arguments as? Map<*, *>
                 setTargetPickerActive(arguments?.get("active") == true)
+                result.success(null)
+            }
+            "setTextInputActive" -> {
+                val arguments = call.arguments as? Map<*, *>
+                textInputActive = arguments?.get("active") == true
+                updateTextInputMode()
                 result.success(null)
             }
             "playerAction" -> {
@@ -722,8 +730,13 @@ internal class PlayerOverlayHost(
 
     private fun setTargetPickerActive(active: Boolean) {
         targetPickerActive = active
+        updateTextInputMode()
+    }
+
+    private fun updateTextInputMode() {
         val view = flutterView ?: return
         val params = layoutParams ?: return
+        val active = targetPickerActive || textInputActive
         params.flags = if (active) {
             params.flags and WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE.inv()
         } else {
@@ -1110,6 +1123,7 @@ internal class PlayerOverlayHost(
         windowAttached = false
         resizeModeEnabled = false
         targetPickerActive = false
+        textInputActive = false
         dockedSide = null
         preDockWindowState = null
         if (attached && view != null) {
@@ -1130,6 +1144,7 @@ internal class PlayerOverlayHost(
         windowAttached = false
         resizeModeEnabled = false
         targetPickerActive = false
+        textInputActive = false
     }
 
     private fun removeView(view: FlutterView) {

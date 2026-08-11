@@ -844,6 +844,7 @@ class _FakePlayerOverlayBridge implements PlayerOverlayBridge {
   int closeCount = 0;
   bool deferActions = false;
   final List<bool> targetPickerActiveStates = <bool>[];
+  final List<bool> textInputActiveStates = <bool>[];
   final List<bool> resizeModes = <bool>[];
   PlayerOverlaySessionHandler? sessionHandler;
   Map<String, Object?>? initialSession;
@@ -885,6 +886,11 @@ class _FakePlayerOverlayBridge implements PlayerOverlayBridge {
   @override
   Future<void> setResizeMode(bool enabled) async {
     resizeModes.add(enabled);
+  }
+
+  @override
+  Future<void> setTextInputActive(bool active) async {
+    textInputActiveStates.add(active);
   }
 
   @override

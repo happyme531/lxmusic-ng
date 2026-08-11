@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:lxmusic_core/lxmusic_core.dart';
 
@@ -34,10 +35,11 @@ class PlayerOverlayPanel extends StatefulWidget {
 }
 
 class _PlayerOverlayPanelState extends State<PlayerOverlayPanel>
-    with SingleTickerProviderStateMixin {
+    with TickerProviderStateMixin {
   static const _speedPresets = <double>[0.5, 0.75, 1, 1.25, 1.5, 2];
   static const _titleDoubleTapTimeout = Duration(milliseconds: 220);
   static const _panelRevealDuration = Duration(milliseconds: 210);
+  static const _songSearchRevealDuration = Duration(milliseconds: 190);
   static const _clippedMenuStates = <PlayerOverlayPanelState>{
     PlayerOverlayPanelState.compact,
     PlayerOverlayPanelState.quickControls,
@@ -57,7 +59,11 @@ class _PlayerOverlayPanelState extends State<PlayerOverlayPanel>
   Timer? _ticker;
   Timer? _speedCommandDebounce;
   Timer? _titleTapTimer;
+  Timer? _songSearchDebounce;
+  final TextEditingController _songSearchController = TextEditingController();
+  final FocusNode _songSearchFocusNode = FocusNode();
   late final AnimationController _panelRevealController;
+  late final AnimationController _songSearchRevealController;
   Animation<double>? _panelHeightAnimation;
   double? _visualPanelHeight;
   DateTime _lastTick = DateTime.now();
@@ -73,6 +79,8 @@ class _PlayerOverlayPanelState extends State<PlayerOverlayPanel>
   bool _resizeMode = false;
   bool _isScrubbing = false;
   bool _startingCalibration = false;
+  bool _songSearchActive = false;
+  bool _songSearchClosing = false;
   double _speed = 1;
   int _playbackModeIndex = 1;
   int _transpose = 0;
@@ -83,9 +91,12 @@ class _PlayerOverlayPanelState extends State<PlayerOverlayPanel>
   int _nextCommandId = 0;
   int _lastAppliedCommandId = 0;
   int _favoriteEffectEpoch = 0;
+  String _songSearchQuery = '';
   List<GamePlayerTrack> _tracks = <GamePlayerTrack>[];
   Map<String, GamePlayerTrack> _tracksByFileName = <String, GamePlayerTrack>{};
+  Map<String, String> _trackSearchKeys = <String, String>{};
   List<GamePlayerPlaylistSnapshot> _playlists = <GamePlayerPlaylistSnapshot>[];
+  Map<String, String> _playlistSearchKeys = <String, String>{};
   String _queuePlaylistId = 'all';
   List<String> _queueFileNames = <String>[];
   List<GamePlayerTrack> _queueSongs = <GamePlayerTrack>[];
@@ -93,6 +104,9 @@ class _PlayerOverlayPanelState extends State<PlayerOverlayPanel>
   List<GamePlayerTrack> _favoriteSongs = <GamePlayerTrack>[];
   List<String> _historyFileNames = <String>[];
   List<GamePlayerTrack> _historySongs = <GamePlayerTrack>[];
+  List<GamePlayerTrack> _songSearchResults = <GamePlayerTrack>[];
+  List<GamePlayerPlaylistSnapshot> _playlistSearchResults =
+      <GamePlayerPlaylistSnapshot>[];
   String? _currentFileName;
 
   static const _playbackModes = <String>['顺序播放', '列表循环', '单曲循环', '随机播放'];
@@ -103,6 +117,10 @@ class _PlayerOverlayPanelState extends State<PlayerOverlayPanel>
     _panelRevealController = AnimationController(
       vsync: this,
       duration: _panelRevealDuration,
+    );
+    _songSearchRevealController = AnimationController(
+      vsync: this,
+      duration: _songSearchRevealDuration,
     );
     widget.bridge.setSessionHandler(_applySession);
     unawaited(_loadInitialSession(++_sessionGeneration));
@@ -128,131 +146,144 @@ class _PlayerOverlayPanelState extends State<PlayerOverlayPanel>
     _ticker?.cancel();
     _speedCommandDebounce?.cancel();
     _titleTapTimer?.cancel();
+    _songSearchDebounce?.cancel();
+    _songSearchController.dispose();
+    _songSearchFocusNode.dispose();
     _panelRevealController.dispose();
+    _songSearchRevealController.dispose();
     widget.bridge.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    return LayoutBuilder(
-      builder: (context, windowConstraints) {
-        final transitionSize = _transitionLayoutSize;
-        final layoutWidth = transitionSize?.width ?? windowConstraints.maxWidth;
-        final layoutHeight =
-            transitionSize?.height ?? windowConstraints.maxHeight;
-        final contentWidth = (layoutWidth - 6).clamp(0.0, double.infinity);
-        final contentHeight = (layoutHeight - 6).clamp(0.0, double.infinity);
-        return Material(
-          color: Colors.transparent,
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              AnimatedBuilder(
-                animation: _panelRevealController,
-                child: RepaintBoundary(
-                  child: SizedBox(
-                    width: contentWidth,
-                    height: contentHeight,
-                    child: KeyedSubtree(
-                      key: ValueKey(_panelState),
-                      child: switch (_panelState) {
-                        PlayerOverlayPanelState.mini => _buildMini(),
-                        PlayerOverlayPanelState.edgeDocked =>
-                          _buildEdgeDocked(),
-                        PlayerOverlayPanelState.compact => _buildCompact(),
-                        PlayerOverlayPanelState.quickControls =>
-                          _buildQuickControls(),
-                        PlayerOverlayPanelState.speedEditor =>
-                          _buildSpeedEditor(),
-                        PlayerOverlayPanelState.songPicker =>
-                          _buildSongPicker(),
-                        PlayerOverlayPanelState.targetPicker =>
-                          _buildTargetPicker(),
-                      },
+    return PopScope(
+      canPop: !_songSearchActive,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop && _songSearchActive) {
+          unawaited(_closeSongSearch());
+        }
+      },
+      child: LayoutBuilder(
+        builder: (context, windowConstraints) {
+          final transitionSize = _transitionLayoutSize;
+          final layoutWidth =
+              transitionSize?.width ?? windowConstraints.maxWidth;
+          final layoutHeight =
+              transitionSize?.height ?? windowConstraints.maxHeight;
+          final contentWidth = (layoutWidth - 6).clamp(0.0, double.infinity);
+          final contentHeight = (layoutHeight - 6).clamp(0.0, double.infinity);
+          return Material(
+            color: Colors.transparent,
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                AnimatedBuilder(
+                  animation: _panelRevealController,
+                  child: RepaintBoundary(
+                    child: SizedBox(
+                      width: contentWidth,
+                      height: contentHeight,
+                      child: KeyedSubtree(
+                        key: ValueKey(_panelState),
+                        child: switch (_panelState) {
+                          PlayerOverlayPanelState.mini => _buildMini(),
+                          PlayerOverlayPanelState.edgeDocked =>
+                            _buildEdgeDocked(),
+                          PlayerOverlayPanelState.compact => _buildCompact(),
+                          PlayerOverlayPanelState.quickControls =>
+                            _buildQuickControls(),
+                          PlayerOverlayPanelState.speedEditor =>
+                            _buildSpeedEditor(),
+                          PlayerOverlayPanelState.songPicker =>
+                            _buildSongPicker(),
+                          PlayerOverlayPanelState.targetPicker =>
+                            _buildTargetPicker(),
+                        },
+                      ),
                     ),
                   ),
-                ),
-                builder: (context, child) {
-                  final visiblePanelHeight =
-                      (_panelHeightAnimation?.value ??
-                              _visualPanelHeight ??
-                              windowConstraints.maxHeight)
-                          .clamp(0.0, windowConstraints.maxHeight);
-                  return Positioned(
-                    top: 0,
-                    left: 0,
-                    right: 0,
-                    height: visiblePanelHeight,
-                    child: Padding(
-                      padding: const EdgeInsets.all(3),
-                      child: DecoratedBox(
-                        decoration: BoxDecoration(
-                          color: _panelColor,
-                          borderRadius: BorderRadius.circular(19),
-                          border: Border.all(color: _panelBorder),
-                        ),
-                        child: ClipRRect(
-                          borderRadius: BorderRadius.circular(18),
-                          child: OverflowBox(
-                            alignment: Alignment.topLeft,
-                            minWidth: contentWidth,
-                            maxWidth: contentWidth,
-                            minHeight: contentHeight,
-                            maxHeight: contentHeight,
-                            child: child,
+                  builder: (context, child) {
+                    final visiblePanelHeight =
+                        (_panelHeightAnimation?.value ??
+                                _visualPanelHeight ??
+                                windowConstraints.maxHeight)
+                            .clamp(0.0, windowConstraints.maxHeight);
+                    return Positioned(
+                      top: 0,
+                      left: 0,
+                      right: 0,
+                      height: visiblePanelHeight,
+                      child: Padding(
+                        padding: const EdgeInsets.all(3),
+                        child: DecoratedBox(
+                          decoration: BoxDecoration(
+                            color: _panelColor,
+                            borderRadius: BorderRadius.circular(19),
+                            border: Border.all(color: _panelBorder),
+                          ),
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(18),
+                            child: OverflowBox(
+                              alignment: Alignment.topLeft,
+                              minWidth: contentWidth,
+                              maxWidth: contentWidth,
+                              minHeight: contentHeight,
+                              maxHeight: contentHeight,
+                              child: child,
+                            ),
                           ),
                         ),
                       ),
-                    ),
-                  );
-                },
-              ),
-              if (_resizeMode &&
-                  _panelState == PlayerOverlayPanelState.quickControls)
-                Positioned(
-                  right: 4,
-                  bottom: 4,
-                  child: IgnorePointer(
-                    child: Container(
-                      key: const ValueKey('player-overlay-resize-handle'),
-                      width: 38,
-                      height: 38,
-                      decoration: BoxDecoration(
-                        color: _accent.withValues(alpha: 0.92),
-                        borderRadius: const BorderRadius.only(
-                          topLeft: Radius.circular(14),
-                          bottomRight: Radius.circular(15),
+                    );
+                  },
+                ),
+                if (_resizeMode &&
+                    _panelState == PlayerOverlayPanelState.quickControls)
+                  Positioned(
+                    right: 4,
+                    bottom: 4,
+                    child: IgnorePointer(
+                      child: Container(
+                        key: const ValueKey('player-overlay-resize-handle'),
+                        width: 38,
+                        height: 38,
+                        decoration: BoxDecoration(
+                          color: _accent.withValues(alpha: 0.92),
+                          borderRadius: const BorderRadius.only(
+                            topLeft: Radius.circular(14),
+                            bottomRight: Radius.circular(15),
+                          ),
+                        ),
+                        child: const Icon(
+                          Icons.south_east_rounded,
+                          size: 21,
+                          color: Color(0xFF143B34),
                         ),
                       ),
-                      child: const Icon(
-                        Icons.south_east_rounded,
-                        size: 21,
-                        color: Color(0xFF143B34),
+                    ),
+                  ),
+                if (_favoriteEffectEpoch > 0)
+                  Positioned(
+                    key: ValueKey(
+                      'player-overlay-favorite-burst-$_favoriteEffectEpoch',
+                    ),
+                    left: 28,
+                    top: 0,
+                    width: 160,
+                    height: 72,
+                    child: IgnorePointer(
+                      child: _FavoriteBurst(
+                        epoch: _favoriteEffectEpoch,
+                        onCompleted: _finishFavoriteEffect,
                       ),
                     ),
                   ),
-                ),
-              if (_favoriteEffectEpoch > 0)
-                Positioned(
-                  key: ValueKey(
-                    'player-overlay-favorite-burst-$_favoriteEffectEpoch',
-                  ),
-                  left: 28,
-                  top: 0,
-                  width: 160,
-                  height: 72,
-                  child: IgnorePointer(
-                    child: _FavoriteBurst(
-                      epoch: _favoriteEffectEpoch,
-                      onCompleted: _finishFavoriteEffect,
-                    ),
-                  ),
-                ),
-            ],
-          ),
-        );
-      },
+              ],
+            ),
+          );
+        },
+      ),
     );
   }
 
@@ -776,27 +807,7 @@ class _PlayerOverlayPanelState extends State<PlayerOverlayPanel>
       children: [
         _expandedHeader(settingsExpanded: false),
         const _PanelDivider(),
-        SizedBox(
-          height: 34,
-          child: Row(
-            children: [
-              for (final tab in _SongPickerTab.values)
-                Expanded(
-                  child: _PickerTab(
-                    key: ValueKey('player-overlay-picker-tab-${tab.name}'),
-                    label: switch (tab) {
-                      _SongPickerTab.playlists => '播放列表',
-                      _SongPickerTab.queue => '当前队列',
-                      _SongPickerTab.favorites => '收藏',
-                      _SongPickerTab.history => '历史',
-                    },
-                    selected: _songPickerTab == tab,
-                    onPressed: () => setState(() => _songPickerTab = tab),
-                  ),
-                ),
-            ],
-          ),
-        ),
+        SizedBox(height: 34, child: _buildSongPickerTopBar()),
         Expanded(child: _buildSongPickerBody()),
         const _PanelDivider(),
         SizedBox(
@@ -807,15 +818,17 @@ class _PlayerOverlayPanelState extends State<PlayerOverlayPanel>
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    const Icon(
-                      Icons.queue_music_rounded,
+                    Icon(
+                      _songSearchActive
+                          ? Icons.search_rounded
+                          : Icons.queue_music_rounded,
                       size: 17,
                       color: _muted,
                     ),
                     const SizedBox(width: 6),
                     Flexible(
                       child: Text(
-                        _activePlaylistName,
+                        _songPickerFooterLabel,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: const TextStyle(
@@ -859,18 +872,172 @@ class _PlayerOverlayPanelState extends State<PlayerOverlayPanel>
     );
   }
 
+  Widget _buildSongPickerTopBar() {
+    final tabs = _buildSongPickerTabs();
+    if (!_songSearchActive) return tabs;
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final expandedWidth = (constraints.maxWidth - 8).clamp(
+          30.0,
+          double.infinity,
+        );
+        return AnimatedBuilder(
+          animation: _songSearchRevealController,
+          child: SizedBox(
+            width: expandedWidth,
+            height: 30,
+            child: _buildExpandedSongSearchBar(),
+          ),
+          builder: (context, searchBar) {
+            final progress = Curves.easeOutCubic.transform(
+              _songSearchRevealController.value,
+            );
+            final tabsOpacity = 1 - (progress / 0.52).clamp(0.0, 1.0);
+            final searchOpacity = ((progress - 0.12) / 0.7).clamp(0.0, 1.0);
+            final width = 30 + (expandedWidth - 30) * progress;
+            return Stack(
+              fit: StackFit.expand,
+              children: [
+                ExcludeSemantics(
+                  child: IgnorePointer(
+                    child: Opacity(opacity: tabsOpacity, child: tabs),
+                  ),
+                ),
+                Positioned(
+                  top: 2,
+                  right: 4,
+                  width: width,
+                  height: 30,
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: Color.lerp(
+                        Colors.transparent,
+                        const Color(0xFF353A40),
+                        progress,
+                      ),
+                      borderRadius: BorderRadius.circular(9),
+                      border: Border.all(
+                        color: Color.lerp(
+                          Colors.transparent,
+                          const Color(0x20FFFFFF),
+                          progress,
+                        )!,
+                      ),
+                    ),
+                    child: ClipRect(
+                      child: OverflowBox(
+                        alignment: Alignment.centerRight,
+                        minWidth: expandedWidth,
+                        maxWidth: expandedWidth,
+                        minHeight: 30,
+                        maxHeight: 30,
+                        child: IgnorePointer(
+                          ignoring: progress < 0.82,
+                          child: Opacity(
+                            opacity: searchOpacity,
+                            child: searchBar,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Widget _buildSongPickerTabs() {
+    return Row(
+      children: [
+        for (final tab in _SongPickerTab.values)
+          Expanded(
+            child: _PickerTab(
+              key: ValueKey('player-overlay-picker-tab-${tab.name}'),
+              label: _songPickerTabLabel(tab),
+              selected: _songPickerTab == tab,
+              onPressed: () => setState(() => _songPickerTab = tab),
+            ),
+          ),
+        _OverlayIconButton(
+          key: const ValueKey('player-overlay-search-open'),
+          icon: Icons.search_rounded,
+          tooltip: '搜索',
+          onPressed: () => unawaited(_openSongSearch()),
+          foreground: _muted,
+          size: 34,
+        ),
+      ],
+    );
+  }
+
+  Widget _buildExpandedSongSearchBar() {
+    return Row(
+      children: [
+        _OverlayIconButton(
+          key: const ValueKey('player-overlay-search-back'),
+          icon: Icons.arrow_back_ios_new_rounded,
+          tooltip: '退出搜索',
+          onPressed: () => unawaited(_closeSongSearch()),
+          foreground: _muted,
+          size: 30,
+        ),
+        Expanded(
+          child: TextField(
+            key: const ValueKey('player-overlay-song-search-field'),
+            controller: _songSearchController,
+            focusNode: _songSearchFocusNode,
+            onChanged: _onSongSearchChanged,
+            keyboardType: TextInputType.text,
+            textInputAction: TextInputAction.search,
+            textCapitalization: TextCapitalization.none,
+            style: const TextStyle(color: Colors.white, fontSize: 11.5),
+            cursorColor: _accent,
+            cursorHeight: 14,
+            decoration: InputDecoration.collapsed(
+              hintText: '搜索${_songPickerTabLabel(_songPickerTab)}',
+              hintStyle: const TextStyle(color: _muted, fontSize: 11),
+            ),
+          ),
+        ),
+        ValueListenableBuilder<TextEditingValue>(
+          valueListenable: _songSearchController,
+          builder: (context, value, _) {
+            if (value.text.isEmpty) return const SizedBox(width: 30);
+            return _OverlayIconButton(
+              key: const ValueKey('player-overlay-search-clear'),
+              icon: Icons.close_rounded,
+              tooltip: '清空搜索',
+              onPressed: _clearSongSearch,
+              foreground: _muted,
+              size: 30,
+            );
+          },
+        ),
+      ],
+    );
+  }
+
   Widget _buildSongPickerBody() {
     if (_songPickerTab == _SongPickerTab.playlists) {
+      final playlists = _visibleSearchPlaylists;
+      if (playlists.isEmpty && _songSearchQuery.isNotEmpty) {
+        return _buildSongSearchEmptyState();
+      }
       return ListView.builder(
         padding: EdgeInsets.zero,
         physics: const ClampingScrollPhysics(),
-        itemCount: _playlists.length,
+        itemCount: playlists.length,
         itemBuilder: (context, index) {
-          final playlist = _playlists[index];
+          final playlist = playlists[index];
           final selected = playlist.id == _queuePlaylistId;
           return InkWell(
-            key: ValueKey('player-overlay-playlist-$index'),
-            onTap: () => _selectPlaylist(index),
+            key: ValueKey('player-overlay-playlist-${playlist.id}'),
+            onTap: () => unawaited(_selectPlaylist(playlist)),
             child: SizedBox(
               height: 42,
               child: Row(
@@ -914,8 +1081,9 @@ class _PlayerOverlayPanelState extends State<PlayerOverlayPanel>
       );
     }
 
-    final songs = _songsForPickerTab;
+    final songs = _visibleSearchSongs;
     if (songs.isEmpty) {
+      if (_songSearchQuery.isNotEmpty) return _buildSongSearchEmptyState();
       return Center(
         key: const ValueKey('player-overlay-song-picker-empty'),
         child: Text(
@@ -991,6 +1159,20 @@ class _PlayerOverlayPanelState extends State<PlayerOverlayPanel>
     );
   }
 
+  Widget _buildSongSearchEmptyState() {
+    final query = _songSearchController.text.trim();
+    return Center(
+      key: const ValueKey('player-overlay-song-search-empty'),
+      child: Text(
+        query.isEmpty ? '没有匹配的项目' : '没有找到“$query”',
+        maxLines: 2,
+        overflow: TextOverflow.ellipsis,
+        textAlign: TextAlign.center,
+        style: const TextStyle(color: _muted, fontSize: 11, height: 1.5),
+      ),
+    );
+  }
+
   Widget _expandedHeader({required bool settingsExpanded}) {
     return SizedBox(
       height: 76,
@@ -1031,6 +1213,33 @@ class _PlayerOverlayPanelState extends State<PlayerOverlayPanel>
     return '所有曲目';
   }
 
+  String _songPickerTabLabel(_SongPickerTab tab) => switch (tab) {
+    _SongPickerTab.playlists => '播放列表',
+    _SongPickerTab.queue => '当前队列',
+    _SongPickerTab.favorites => '收藏',
+    _SongPickerTab.history => '历史',
+  };
+
+  String get _songPickerFooterLabel {
+    if (!_songSearchActive) return _activePlaylistName;
+    final scope = _songPickerTabLabel(_songPickerTab);
+    if (_songSearchQuery.isEmpty) return '搜索$scope';
+    final count = _songPickerTab == _SongPickerTab.playlists
+        ? _playlistSearchResults.length
+        : _songSearchResults.length;
+    return '$count 个结果 · $scope';
+  }
+
+  List<GamePlayerTrack> get _visibleSearchSongs =>
+      _songSearchActive && _songSearchQuery.isNotEmpty
+      ? _songSearchResults
+      : _songsForPickerTab;
+
+  List<GamePlayerPlaylistSnapshot> get _visibleSearchPlaylists =>
+      _songSearchActive && _songSearchQuery.isNotEmpty
+      ? _playlistSearchResults
+      : _playlists;
+
   GamePlayerTrack? _trackByFileName(String? fileName) {
     if (fileName == null) return null;
     return _tracksByFileName[fileName];
@@ -1052,13 +1261,55 @@ class _PlayerOverlayPanelState extends State<PlayerOverlayPanel>
     _tracksByFileName = <String, GamePlayerTrack>{
       for (final track in _tracks) track.fileName: track,
     };
+    _trackSearchKeys = <String, String>{
+      for (final track in _tracks)
+        track.fileName: _normalizeSearchValue(track.fileName),
+    };
+  }
+
+  void _indexPlaylists() {
+    _playlistSearchKeys = <String, String>{
+      for (final playlist in _playlists)
+        playlist.id: _normalizeSearchValue(playlist.name),
+    };
   }
 
   void _refreshSongLists() {
     _queueSongs = _tracksForNames(_queueFileNames);
     _favoriteSongs = _tracksForNames(_favoriteFileNames);
     _historySongs = _tracksForNames(_historyFileNames);
+    _refreshSongSearchResults();
   }
+
+  void _refreshSongSearchResults() {
+    if (!_songSearchActive || _songSearchQuery.isEmpty) {
+      _songSearchResults = <GamePlayerTrack>[];
+      _playlistSearchResults = <GamePlayerPlaylistSnapshot>[];
+      return;
+    }
+    if (_songPickerTab == _SongPickerTab.playlists) {
+      _playlistSearchResults = _playlists
+          .where(
+            (playlist) => (_playlistSearchKeys[playlist.id] ?? '').contains(
+              _songSearchQuery,
+            ),
+          )
+          .toList(growable: false);
+      _songSearchResults = <GamePlayerTrack>[];
+      return;
+    }
+    _songSearchResults = _songsForPickerTab
+        .where(
+          (song) => (_trackSearchKeys[song.fileName] ?? '').contains(
+            _songSearchQuery,
+          ),
+        )
+        .toList(growable: false);
+    _playlistSearchResults = <GamePlayerPlaylistSnapshot>[];
+  }
+
+  static String _normalizeSearchValue(String value) =>
+      value.trim().toLowerCase();
 
   String get _currentSubtitle {
     if (_playbackStatus == 'preparing') return '正在准备演奏计划…';
@@ -1212,6 +1463,7 @@ class _PlayerOverlayPanelState extends State<PlayerOverlayPanel>
         _tracks = List<GamePlayerTrack>.of(snapshot.tracks);
         _indexTracks();
         _playlists = List<GamePlayerPlaylistSnapshot>.of(snapshot.playlists);
+        _indexPlaylists();
         _queuePlaylistId = snapshot.queuePlaylistId;
         _queueFileNames = List<String>.of(snapshot.queueFileNames);
         _favoriteFileNames = snapshot.favoriteFileNames.toSet();
@@ -1300,6 +1552,7 @@ class _PlayerOverlayPanelState extends State<PlayerOverlayPanel>
               ),
             )
             .toList(growable: false);
+        _indexPlaylists();
       }
       if (session['queuePlaylistId'] case final String playlistId) {
         _queuePlaylistId = playlistId;
@@ -1372,6 +1625,7 @@ class _PlayerOverlayPanelState extends State<PlayerOverlayPanel>
         if (historyChanged) {
           _historySongs = _tracksForNames(_historyFileNames);
         }
+        _refreshSongSearchResults();
       }
       _lastTick = DateTime.now();
     });
@@ -1453,8 +1707,9 @@ class _PlayerOverlayPanelState extends State<PlayerOverlayPanel>
     }
   }
 
-  void _selectPlaylist(int index) {
-    final playlist = _playlists[index];
+  Future<void> _selectPlaylist(GamePlayerPlaylistSnapshot playlist) async {
+    if (_songSearchActive) await _closeSongSearch();
+    if (!mounted) return;
     setState(() {
       _queuePlaylistId = playlist.id;
       _queueFileNames = List<String>.of(playlist.fileNames);
@@ -1469,6 +1724,7 @@ class _PlayerOverlayPanelState extends State<PlayerOverlayPanel>
     _historyFileNames.insert(0, song.fileName);
     if (_historyFileNames.length > 20) _historyFileNames.removeLast();
     _historySongs = _tracksForNames(_historyFileNames);
+    _refreshSongSearchResults();
   }
 
   void _cyclePlaybackMode() {
@@ -1488,6 +1744,7 @@ class _PlayerOverlayPanelState extends State<PlayerOverlayPanel>
         _favoriteFileNames.remove(fileName);
       }
       _favoriteSongs = _tracksForNames(_favoriteFileNames);
+      _refreshSongSearchResults();
     });
     _sendAction('toggleFavorite', <String, Object?>{'fileName': fileName});
   }
@@ -1595,6 +1852,102 @@ class _PlayerOverlayPanelState extends State<PlayerOverlayPanel>
     }
     setState(() => _songPickerTab = _SongPickerTab.queue);
     unawaited(_setPanelState(PlayerOverlayPanelState.songPicker));
+  }
+
+  Future<void> _openSongSearch() async {
+    if (_songSearchActive || _songSearchClosing) return;
+    _songSearchDebounce?.cancel();
+    _songSearchController.clear();
+    setState(() {
+      _songSearchActive = true;
+      _songSearchClosing = false;
+      _songSearchQuery = '';
+      _songSearchResults = <GamePlayerTrack>[];
+      _playlistSearchResults = <GamePlayerPlaylistSnapshot>[];
+    });
+    try {
+      await Future.wait<void>(<Future<void>>[
+        _setSongSearchInputActive(true),
+        _songSearchRevealController.forward(from: 0).orCancel,
+      ]);
+    } on TickerCanceled {
+      return;
+    }
+    if (!mounted || !_songSearchActive || _songSearchClosing) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_songSearchActive || _songSearchClosing) return;
+      _songSearchFocusNode.requestFocus();
+      unawaited(SystemChannels.textInput.invokeMethod<void>('TextInput.show'));
+    });
+  }
+
+  Future<void> _closeSongSearch({bool animate = true}) async {
+    if (!_songSearchActive || _songSearchClosing) return;
+    _songSearchClosing = true;
+    _songSearchDebounce?.cancel();
+    _songSearchFocusNode.unfocus();
+    final inputFuture = _setSongSearchInputActive(false);
+    if (animate) {
+      try {
+        await _songSearchRevealController.reverse().orCancel;
+      } on TickerCanceled {
+        return;
+      }
+    } else {
+      _songSearchRevealController.value = 0;
+    }
+    await inputFuture;
+    if (!mounted) return;
+    _songSearchController.clear();
+    setState(_resetSongSearchState);
+  }
+
+  Future<void> _setSongSearchInputActive(bool active) async {
+    try {
+      await widget.bridge.setTextInputActive(active);
+    } catch (_) {
+      // A hardware keyboard can still search if the native overlay is closing.
+    }
+  }
+
+  void _resetSongSearchState() {
+    _songSearchActive = false;
+    _songSearchClosing = false;
+    _songSearchQuery = '';
+    _songSearchResults = <GamePlayerTrack>[];
+    _playlistSearchResults = <GamePlayerPlaylistSnapshot>[];
+  }
+
+  void _onSongSearchChanged(String value) {
+    _songSearchDebounce?.cancel();
+    final normalized = _normalizeSearchValue(value);
+    if (normalized.isEmpty) {
+      if (_songSearchQuery.isEmpty) return;
+      setState(() {
+        _songSearchQuery = '';
+        _refreshSongSearchResults();
+      });
+      return;
+    }
+    _songSearchDebounce = Timer(const Duration(milliseconds: 120), () {
+      if (!mounted || !_songSearchActive) return;
+      final latest = _normalizeSearchValue(_songSearchController.text);
+      if (latest == _songSearchQuery) return;
+      setState(() {
+        _songSearchQuery = latest;
+        _refreshSongSearchResults();
+      });
+    });
+  }
+
+  void _clearSongSearch() {
+    _songSearchDebounce?.cancel();
+    _songSearchController.clear();
+    setState(() {
+      _songSearchQuery = '';
+      _refreshSongSearchResults();
+    });
+    _songSearchFocusNode.requestFocus();
   }
 
   void _handleTitleTap() {
@@ -1732,6 +2085,10 @@ class _PlayerOverlayPanelState extends State<PlayerOverlayPanel>
 
   Future<void> _setPanelState(PlayerOverlayPanelState state) async {
     if (_panelState == state) return;
+    if (_songSearchActive && state != PlayerOverlayPanelState.songPicker) {
+      await _closeSongSearch(animate: false);
+      if (!mounted) return;
+    }
     if (_resizeMode && state != PlayerOverlayPanelState.quickControls) {
       setState(() => _resizeMode = false);
       try {
