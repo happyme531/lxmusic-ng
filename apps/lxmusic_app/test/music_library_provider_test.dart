@@ -61,52 +61,136 @@ void main() {
     );
   });
 
-  test('re-importing same filename overwrites library copy and refreshes metadata', () async {
-    final container = ProviderContainer(
-      overrides: [
-        fileStoreProvider.overrideWithValue(
-          _TestPlatformFileStore(),
+  test(
+    're-importing same filename overwrites library copy and refreshes metadata',
+    () async {
+      final container = ProviderContainer(
+        overrides: [
+          fileStoreProvider.overrideWithValue(_TestPlatformFileStore()),
+          parserRegistryProvider.overrideWithValue(
+            ParserRegistry(<String, ScoreParser>{'midi': _FakeMidiParser()}),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      final notifier = container.read(musicLibraryProvider.notifier);
+      await container.read(musicLibraryProvider.future);
+
+      final firstReport = await notifier.importFiles(<PickedFileData>[
+        PickedFileData(
+          fileName: 'demo.mid',
+          bytes: Uint8List.fromList(const <int>[1]),
         ),
-        parserRegistryProvider.overrideWithValue(
-          ParserRegistry(<String, ScoreParser>{
-            'midi': _FakeMidiParser(),
-          }),
+      ]);
+      expect(firstReport.importedCount, 1);
+      expect(firstReport.failures, isEmpty);
+
+      final firstState = container.read(musicLibraryProvider).value!;
+      expect(firstState.files.single.noteCount, 1);
+      expect(
+        await container
+            .read(fileStoreProvider)
+            .readBytes(firstState.files.single.path),
+        orderedEquals(const <int>[1]),
+      );
+
+      final secondReport = await notifier.importFiles(<PickedFileData>[
+        PickedFileData(
+          fileName: 'demo.mid',
+          bytes: Uint8List.fromList(const <int>[3]),
         ),
-      ],
-    );
-    addTearDown(container.dispose);
+      ]);
+      expect(secondReport.importedCount, 1);
+      expect(secondReport.failures, isEmpty);
 
-    final notifier = container.read(musicLibraryProvider.notifier);
-    await container.read(musicLibraryProvider.future);
+      final secondState = container.read(musicLibraryProvider).value!;
+      expect(secondState.files.single.noteCount, 3);
+      expect(
+        await container
+            .read(fileStoreProvider)
+            .readBytes(secondState.files.single.path),
+        orderedEquals(const <int>[3]),
+      );
+    },
+  );
 
-    await notifier.importFiles(<PickedFileData>[
-      PickedFileData(
-        fileName: 'demo.mid',
-        bytes: Uint8List.fromList(const <int>[1]),
-      ),
-    ]);
+  test(
+    'plain txt is detected and unknown text is reported without storage',
+    () async {
+      final fileStore = _TestPlatformFileStore();
+      final container = ProviderContainer(
+        overrides: [fileStoreProvider.overrideWithValue(fileStore)],
+      );
+      addTearDown(container.dispose);
 
-    final firstState = container.read(musicLibraryProvider).value!;
-    expect(firstState.files.single.noteCount, 1);
-    expect(
-      await container.read(fileStoreProvider).readBytes(firstState.files.single.path),
-      orderedEquals(const <int>[1]),
-    );
+      final notifier = container.read(musicLibraryProvider.notifier);
+      await container.read(musicLibraryProvider.future);
+      final report = await notifier.importFiles(<PickedFileData>[
+        PickedFileData(
+          fileName: 'scale.txt',
+          bytes: Uint8List.fromList(utf8.encode('1 2 3')),
+        ),
+        PickedFileData(
+          fileName: 'notes.txt',
+          bytes: Uint8List.fromList(utf8.encode('普通说明文字')),
+        ),
+      ]);
 
-    await notifier.importFiles(<PickedFileData>[
-      PickedFileData(
-        fileName: 'demo.mid',
-        bytes: Uint8List.fromList(const <int>[3]),
-      ),
-    ]);
+      expect(report.importedCount, 1);
+      expect(report.failures, hasLength(1));
+      expect(report.failures.single.fileName, 'notes.txt');
+      expect(
+        report.failures.single.kind,
+        MusicImportFailureKind.formatDetectionFailed,
+      );
+      final state = container.read(musicLibraryProvider).value!;
+      expect(state.files.single.fileName, 'scale.txt');
+      expect(state.files.single.formatId, 'domiso');
+      expect(state.files.single.noteCount, 3);
+      expect(await fileStore.exists('memory://notes.txt'), isFalse);
+    },
+  );
 
-    final secondState = container.read(musicLibraryProvider).value!;
-    expect(secondState.files.single.noteCount, 3);
-    expect(
-      await container.read(fileStoreProvider).readBytes(secondState.files.single.path),
-      orderedEquals(const <int>[3]),
-    );
-  });
+  test(
+    'empty same-name replacement is rejected and preserves old file',
+    () async {
+      final fileStore = _TestPlatformFileStore();
+      final container = ProviderContainer(
+        overrides: [
+          fileStoreProvider.overrideWithValue(fileStore),
+          parserRegistryProvider.overrideWithValue(
+            ParserRegistry(<String, ScoreParser>{'midi': _FakeMidiParser()}),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      final notifier = container.read(musicLibraryProvider.notifier);
+      await container.read(musicLibraryProvider.future);
+      await notifier.importFiles(<PickedFileData>[
+        PickedFileData(
+          fileName: 'demo.mid',
+          bytes: Uint8List.fromList(const <int>[2]),
+        ),
+      ]);
+      final report = await notifier.importFiles(<PickedFileData>[
+        PickedFileData(
+          fileName: 'demo.mid',
+          bytes: Uint8List.fromList(const <int>[0]),
+        ),
+      ]);
+
+      expect(report.importedCount, 0);
+      expect(report.failures.single.kind, MusicImportFailureKind.emptyScore);
+      final state = container.read(musicLibraryProvider).value!;
+      expect(state.files.single.noteCount, 2);
+      expect(
+        await fileStore.readBytes(state.files.single.path),
+        orderedEquals(const <int>[2]),
+      );
+    },
+  );
 
   test('filtered music files keeps favorites above non-favorites', () async {
     final container = ProviderContainer(
@@ -193,11 +277,8 @@ class _FakeMidiParser implements ScoreParser {
           channel: 0,
           notes: List<NoteEvent>.generate(
             count,
-            (index) => NoteEvent(
-              pitch: 60,
-              startMs: index * 100,
-              durationMs: 100,
-            ),
+            (index) =>
+                NoteEvent(pitch: 60, startMs: index * 100, durationMs: 100),
           ),
         ),
       ],

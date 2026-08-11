@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import '../../domain/score.dart';
+import '../music_text_decoder.dart';
 import '../score_parser.dart';
 
 class ToneJsJsonScoreParser implements ScoreParser {
@@ -10,7 +11,11 @@ class ToneJsJsonScoreParser implements ScoreParser {
 
   @override
   Score parse(Uint8List bytes) {
-    final json = jsonDecode(utf8.decode(bytes)) as Map<String, Object?>;
+    final decoded = jsonDecode(decodeMusicText(bytes));
+    if (decoded is! Map) {
+      throw const FormatException('Tone.js JSON 根节点必须是对象');
+    }
+    final json = Map<String, Object?>.from(decoded);
     final trackList = (json['tracks'] as List<Object?>? ?? const <Object?>[])
         .cast<Map<Object?, Object?>>();
 

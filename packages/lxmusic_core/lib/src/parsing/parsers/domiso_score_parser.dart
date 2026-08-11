@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import '../../domain/score.dart';
+import '../../parsing/music_text_decoder.dart';
 import '../../parsing/score_parser.dart';
 
 class DoMiSoScoreParser implements ScoreParser {
@@ -13,7 +14,7 @@ class DoMiSoScoreParser implements ScoreParser {
 
   @override
   Score parse(Uint8List bytes) {
-    final document = _splitDocument(utf8.decode(bytes));
+    final document = _splitDocument(decodeMusicText(bytes));
     final tokens = _tokenize(document.body);
     var bpm = _defaultBpm;
     var basePitch = _noteNameToMidiPitch('C');

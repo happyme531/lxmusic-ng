@@ -121,7 +121,7 @@ void main(List<String> arguments) async {
       'format',
       abbr: 'f',
       allowed: _inputFormatIds,
-      help: '输入格式；省略时按输入文件后缀推断。',
+      help: '输入格式；省略时根据输入文件后缀和内容检测。',
     )
     ..addOption('profile', mandatory: true)
     ..addOption('layout')
@@ -147,7 +147,7 @@ void main(List<String> arguments) async {
       'format',
       abbr: 'f',
       allowed: _inputFormatIds,
-      help: '输入格式；省略时按输入文件后缀推断，与参数位置无关。',
+      help: '输入格式；省略时根据后缀和内容检测，与参数位置无关。',
     )
     ..addOption('profile', help: '分析或 pipeline-only config 使用的目标 profile。')
     ..addOption('layout')
@@ -340,7 +340,11 @@ void _runInspect(ArgResults command) {
 }
 
 void _runAnalyze(ArgResults command) {
-  final inputFormat = _resolveInputFormat(command);
+  final inputFile = File(command['input'] as String);
+  final inputFormat = _resolveInputFormat(
+    command,
+    bytes: inputFile.readAsBytesSync(),
+  );
   final analysis = _analyzeInput(command, inputFormatId: inputFormat);
   final outputPath = command['output'] as String?;
   if (outputPath != null && outputPath.isNotEmpty) {
@@ -359,13 +363,11 @@ Future<void> _runConvert(ArgResults command) async {
   final assets = bundledYamlAssetBundle;
   final calibrationRepo = YamlCalibrationRepository(assets);
   final registry = _registry();
-  final inputFormat = _resolveInputFormat(command);
   final outputPath = _resolveConvertOutputPath(command);
   final inputFile = File(command['input'] as String);
-  final score = registry.parse(
-    bytes: inputFile.readAsBytesSync(),
-    formatId: inputFormat,
-  );
+  final inputBytes = inputFile.readAsBytesSync();
+  final inputFormat = _resolveInputFormat(command, bytes: inputBytes);
+  final score = registry.parse(bytes: inputBytes, formatId: inputFormat);
   stderr.writeln(
     '[lxmusic] parsed score: ${score.tracks.length} track(s), '
     '${score.totalNoteCount} note(s), ${score.totalDurationMs} ms',
@@ -518,19 +520,23 @@ Future<void> _runConvert(ArgResults command) async {
   }
 }
 
-String _resolveInputFormat(ArgResults command) {
+String _resolveInputFormat(ArgResults command, {required Uint8List bytes}) {
   final explicit = command['format'] as String?;
   if (explicit != null && explicit.isNotEmpty) {
     return explicit;
   }
   final path = command['input'] as String;
-  final inferred = _inferInputFormatFromPath(path);
-  if (inferred != null) {
-    return inferred;
+  final detection = const ScoreFormatDetector().detect(
+    fileName: path,
+    bytes: bytes,
+  );
+  if (detection case DetectedScoreFormat(:final formatId)) {
+    return formatId;
   }
-  throw ArgumentError(
-    'Cannot infer input format from "$path". '
-    'Specify with -f / --format (e.g. -f tonejs-json).',
+  final rejected = detection as RejectedScoreFormat;
+  throw _CliFailure(
+    'Cannot detect input format for "$path": ${rejected.message}',
+    exitCode: _exitDataError,
   );
 }
 
@@ -566,30 +572,6 @@ String _resolveConvertOutputFormat(ArgResults command, String? outputPath) {
   return 'json';
 }
 
-String? _inferInputFormatFromPath(String filePath) {
-  final lower = filePath.toLowerCase().replaceAll('\\', '/');
-  const suffixes = <String>[
-    '.dms.txt',
-    '.skystudio.txt',
-    '.score.json',
-    '.mid',
-    '.json',
-  ];
-  const ids = <String, String>{
-    '.dms.txt': 'domiso',
-    '.skystudio.txt': 'skystudio-json',
-    '.score.json': 'json-score',
-    '.mid': 'midi',
-    '.json': 'tonejs-json',
-  };
-  for (final suffix in suffixes) {
-    if (lower.endsWith(suffix)) {
-      return ids[suffix];
-    }
-  }
-  return null;
-}
-
 String? _inferOutputFormatFromPath(String filePath) {
   final lower = filePath.toLowerCase().replaceAll('\\', '/');
   if (lower.endsWith('.mid')) {
@@ -604,7 +586,7 @@ String? _inferOutputFormatFromPath(String filePath) {
 ParserRegistry _registry() {
   return ParserRegistry(<String, ScoreParser>{
     'domiso': DoMiSoScoreParser(),
-    'json-score': _JsonScoreParser(),
+    'json-score': const JsonScoreParser(),
     'midi': const MidiScoreParser(),
     'skystudio-json': const SkyStudioJsonScoreParser(),
     'tonejs-json': ToneJsJsonScoreParser(),
@@ -1397,16 +1379,5 @@ void _writeBytesFile(String path, List<int> contents) {
       'Cannot create output: ${_fileSystemErrorMessage(error)}',
       exitCode: _exitCannotCreate,
     );
-  }
-}
-
-class _JsonScoreParser implements ScoreParser {
-  @override
-  String get formatId => 'json-score';
-
-  @override
-  Score parse(Uint8List bytes) {
-    final decoded = jsonDecode(utf8.decode(bytes)) as Map<String, Object?>;
-    return Score.fromJson(decoded);
   }
 }

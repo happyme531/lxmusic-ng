@@ -1,6 +1,8 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:lxmusic_core/lxmusic_core.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../../core/service_locator.dart';
@@ -14,6 +16,36 @@ const _selectedPlaylistStorageKey = 'music_library_selected_playlist';
 
 const allSongsPlaylistId = 'all';
 const favoritesPlaylistId = 'favorites';
+
+enum MusicImportFailureKind {
+  unreadableFile,
+  formatDetectionFailed,
+  invalidFormat,
+  emptyScore,
+  storageError,
+}
+
+class MusicImportFailure {
+  const MusicImportFailure({
+    required this.fileName,
+    required this.kind,
+    required this.message,
+  });
+
+  final String fileName;
+  final MusicImportFailureKind kind;
+  final String message;
+}
+
+class MusicImportReport {
+  const MusicImportReport({
+    required this.importedCount,
+    required this.failures,
+  });
+
+  final int importedCount;
+  final List<MusicImportFailure> failures;
+}
 
 final musicLibraryProvider =
     AsyncNotifierProvider<MusicLibraryNotifier, MusicLibraryState>(
@@ -246,80 +278,138 @@ class MusicLibraryNotifier extends AsyncNotifier<MusicLibraryState> {
     state = AsyncData(next);
   }
 
-  Future<int> importFiles(List<PickedFileData> pickedFiles) async {
+  Future<MusicImportReport> importFiles(
+    List<PickedFileData> pickedFiles,
+  ) async {
     final registry = ref.read(parserRegistryProvider);
+    final detector = ref.read(scoreFormatDetectorProvider);
     final fileStore = ref.read(fileStoreProvider);
     final current = state.value ?? const MusicLibraryState.empty();
     final files = List<MusicFile>.of(current.files);
+    final failures = <MusicImportFailure>[];
     var imported = 0;
 
     for (final pickedFile in pickedFiles) {
       if (!pickedFile.hasReadableContent) {
+        failures.add(
+          MusicImportFailure(
+            fileName: pickedFile.fileName,
+            kind: MusicImportFailureKind.unreadableFile,
+            message: '无法读取文件内容',
+          ),
+        );
         continue;
       }
       final fileName = pickedFile.fileName;
-      final format = inferFormat(fileName);
-      if (format == null) {
+      late final Uint8List bytes;
+      try {
+        bytes =
+            pickedFile.bytes ??
+            await fileStore.readBytes(pickedFile.sourcePath!);
+      } catch (_) {
+        failures.add(
+          MusicImportFailure(
+            fileName: fileName,
+            kind: MusicImportFailureKind.unreadableFile,
+            message: '无法读取文件内容',
+          ),
+        );
         continue;
       }
+
+      final detection = detector.detect(fileName: fileName, bytes: bytes);
+      if (detection case RejectedScoreFormat()) {
+        failures.add(
+          MusicImportFailure(
+            fileName: fileName,
+            kind: MusicImportFailureKind.formatDetectionFailed,
+            message: detection.message,
+          ),
+        );
+        continue;
+      }
+      final format = (detection as DetectedScoreFormat).formatId;
+
+      late final Score score;
+      try {
+        score = registry.parse(bytes: bytes, formatId: format);
+      } catch (error) {
+        failures.add(
+          MusicImportFailure(
+            fileName: fileName,
+            kind: MusicImportFailureKind.invalidFormat,
+            message: _parserFailureMessage(format, error),
+          ),
+        );
+        continue;
+      }
+      if (score.totalNoteCount == 0) {
+        failures.add(
+          MusicImportFailure(
+            fileName: fileName,
+            kind: MusicImportFailureKind.emptyScore,
+            message: '乐谱中没有可播放音符',
+          ),
+        );
+        continue;
+      }
+
+      late final String destPath;
+      try {
+        destPath = await fileStore.importBytes(
+          fileName: fileName,
+          bytes: bytes,
+        );
+      } catch (_) {
+        failures.add(
+          MusicImportFailure(
+            fileName: fileName,
+            kind: MusicImportFailureKind.storageError,
+            message: '保存到曲库失败',
+          ),
+        );
+        continue;
+      }
+
       final previous = files
           .where((file) => file.fileName == fileName)
           .toList();
       for (final existing in previous) {
+        if (existing.path == destPath) {
+          continue;
+        }
         try {
           await fileStore.deleteFile(existing.path);
         } catch (_) {}
       }
-      late final String destPath;
-      try {
-        if (pickedFile.bytes case final bytes?) {
-          destPath = await fileStore.importBytes(
-            fileName: fileName,
-            bytes: bytes,
-          );
-        } else {
-          destPath = await fileStore.importFile(
-            sourcePath: pickedFile.sourcePath!,
-            fileName: fileName,
-          );
-        }
-      } catch (_) {
-        continue;
-      }
-
-      MusicFile musicFile;
-      try {
-        final bytes = await fileStore.readBytes(destPath);
-        final score = registry.parse(bytes: bytes, formatId: format);
-        musicFile = MusicFile(
-          path: destPath,
-          fileName: fileName,
-          formatId: format,
-          trackCount: score.tracks.length,
-          durationMs: score.totalDurationMs,
-          noteCount: score.tracks.fold(
-            0,
-            (sum, track) => sum + track.notes.length,
-          ),
-          importedAt: DateTime.now(),
-        );
-      } catch (_) {
-        musicFile = MusicFile(
-          path: destPath,
-          fileName: fileName,
-          formatId: format,
-          importedAt: DateTime.now(),
-        );
-      }
+      final musicFile = MusicFile(
+        path: destPath,
+        fileName: fileName,
+        formatId: format,
+        trackCount: score.tracks.length,
+        durationMs: score.totalDurationMs,
+        noteCount: score.totalNoteCount,
+        importedAt: DateTime.now(),
+      );
 
       files.removeWhere((file) => file.fileName == fileName);
       files.add(musicFile);
       imported++;
     }
 
-    files.sort((a, b) => a.fileName.compareTo(b.fileName));
-    await _replaceState(current.copyWith(files: files));
-    return imported;
+    if (imported > 0) {
+      files.sort((a, b) => a.fileName.compareTo(b.fileName));
+      await _replaceState(current.copyWith(files: files));
+    }
+    return MusicImportReport(importedCount: imported, failures: failures);
+  }
+
+  String _parserFailureMessage(String format, Object error) {
+    final detail = switch (error) {
+      FormatException(:final message) => message,
+      _ => '文件结构不符合要求',
+    };
+    return '$format 文件内容无效：$detail';
   }
 
   Future<void> setCurrentPlaylist(String playlistId) async {

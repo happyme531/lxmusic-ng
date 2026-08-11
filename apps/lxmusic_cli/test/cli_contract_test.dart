@@ -63,6 +63,102 @@ void main() {
     });
   });
 
+  group('automatic format detection', () {
+    test('detects internal JSON without --format', () async {
+      final result = await _runCli(<String>[
+        'convert',
+        '--input',
+        _workspacePath('examples/json_score/simple_score.json'),
+        '--profile',
+        'generic_demo',
+        '--output-format',
+        'semantic-plan-json',
+      ]);
+
+      expect(result.exitCode, 0, reason: result.stderr as String);
+      expect(result.stderr as String, contains('[lxmusic] parsed score'));
+    });
+
+    test('detects DoMiSo content in a plain txt file', () async {
+      final temp = await Directory.systemTemp.createTemp('lxmusic_cli_txt_');
+      addTearDown(() => temp.delete(recursive: true));
+      final input = File('${temp.path}/scale.txt')
+        ..writeAsStringSync('1=C4\nbpm=120\n1 2 3');
+
+      final result = await _runCli(<String>[
+        'analyze',
+        '--input',
+        input.path,
+        '--profile',
+        'generic_demo',
+      ]);
+
+      expect(result.exitCode, 0, reason: result.stderr as String);
+      expect(result.stdout as String, contains('"analysis"'));
+    });
+
+    test('rejects unknown plain text with EX_DATAERR', () async {
+      final temp = await Directory.systemTemp.createTemp('lxmusic_cli_txt_');
+      addTearDown(() => temp.delete(recursive: true));
+      final input = File('${temp.path}/readme.txt')
+        ..writeAsStringSync('这是一段普通说明文字。');
+
+      final result = await _runCli(<String>[
+        'analyze',
+        '--input',
+        input.path,
+        '--profile',
+        'generic_demo',
+      ]);
+
+      _expectFailure(result, exitCode: 65, containing: '无法识别 TXT 乐谱格式');
+    });
+
+    test(
+      'compound suffix stays authoritative when content disagrees',
+      () async {
+        final temp = await Directory.systemTemp.createTemp(
+          'lxmusic_cli_suffix_',
+        );
+        addTearDown(() => temp.delete(recursive: true));
+        final input = File('${temp.path}/renamed.dms.txt')
+          ..writeAsStringSync('''
+[
+  {"name":"Sky","songNotes":[{"time":0,"key":"1Key0"}]}
+]
+''');
+
+        final result = await _runCli(<String>[
+          'analyze',
+          '--input',
+          input.path,
+          '--profile',
+          'generic_demo',
+        ]);
+
+        _expectFailure(result, exitCode: 65, containing: 'Invalid input data');
+      },
+    );
+
+    test('explicit --format bypasses extension detection', () async {
+      final temp = await Directory.systemTemp.createTemp('lxmusic_cli_force_');
+      addTearDown(() => temp.delete(recursive: true));
+      final input = File('${temp.path}/score.bin')..writeAsStringSync('1 2 3');
+
+      final result = await _runCli(<String>[
+        'analyze',
+        '--input',
+        input.path,
+        '--format',
+        'domiso',
+        '--profile',
+        'generic_demo',
+      ]);
+
+      expect(result.exitCode, 0, reason: result.stderr as String);
+    });
+  });
+
   group('conversion config contract', () {
     test(
       'accepts the repository pipeline-only config with a CLI target',

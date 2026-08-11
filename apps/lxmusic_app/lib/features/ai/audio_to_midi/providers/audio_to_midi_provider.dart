@@ -370,13 +370,16 @@ class AudioToMidiNotifier extends AsyncNotifier<AudioToMidiState> {
       preferredMidiFileName,
       library.files.map((file) => file.fileName),
     );
-    final imported = await ref.read(musicLibraryProvider.notifier).importFiles(
+    final report = await ref.read(musicLibraryProvider.notifier).importFiles(
       <PickedFileData>[
         PickedFileData(fileName: midiFileName, bytes: result.toMidiBytes()),
       ],
     );
-    if (imported != 1) {
-      throw StateError('无法将 $midiFileName 写入曲库');
+    if (report.importedCount != 1) {
+      final detail = report.failures.isEmpty
+          ? ''
+          : '：${report.failures.first.message}';
+      throw StateError('无法将 $midiFileName 写入曲库$detail');
     }
     return midiFileName;
   }

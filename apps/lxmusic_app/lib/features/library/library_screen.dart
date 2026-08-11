@@ -322,15 +322,22 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
       return;
     }
 
-    final count = await ref
+    final report = await ref
         .read(musicLibraryProvider.notifier)
         .importFiles(pickedFiles);
     if (!context.mounted) {
       return;
     }
+    if (report.failures.isNotEmpty) {
+      await showDialog<void>(
+        context: context,
+        builder: (context) => MusicImportResultDialog(report: report),
+      );
+      return;
+    }
     ScaffoldMessenger.of(
       context,
-    ).showSnackBar(SnackBar(content: Text('成功导入 $count 个文件')));
+    ).showSnackBar(SnackBar(content: Text('成功导入 ${report.importedCount} 个文件')));
   }
 
   Future<void> _createPlaylist(BuildContext context, WidgetRef ref) async {
@@ -706,6 +713,57 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
   String _extensionForExport(String fileName) {
     final dot = fileName.lastIndexOf('.');
     return dot >= 0 ? fileName.substring(dot + 1) : 'bin';
+  }
+}
+
+class MusicImportResultDialog extends StatelessWidget {
+  const MusicImportResultDialog({required this.report, super.key});
+
+  final MusicImportReport report;
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('导入完成'),
+      content: SizedBox(
+        width: 420,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            Text('成功 ${report.importedCount} 个，失败 ${report.failures.length} 个'),
+            const SizedBox(height: 12),
+            Flexible(
+              child: ListView.separated(
+                shrinkWrap: true,
+                itemCount: report.failures.length,
+                separatorBuilder: (_, _) => const Divider(height: 16),
+                itemBuilder: (context, index) {
+                  final failure = report.failures[index];
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: <Widget>[
+                      Text(
+                        failure.fileName,
+                        style: Theme.of(context).textTheme.titleSmall,
+                      ),
+                      const SizedBox(height: 2),
+                      Text(failure.message),
+                    ],
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+      actions: <Widget>[
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('确定'),
+        ),
+      ],
+    );
   }
 }
 

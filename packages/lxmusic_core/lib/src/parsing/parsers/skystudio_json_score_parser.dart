@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import '../../domain/score.dart';
+import '../music_text_decoder.dart';
 import '../score_parser.dart';
 
 class SkyStudioJsonScoreParser implements ScoreParser {
@@ -30,7 +31,7 @@ class SkyStudioJsonScoreParser implements ScoreParser {
 
   @override
   Score parse(Uint8List bytes) {
-    final raw = _decodeText(bytes);
+    final raw = decodeMusicText(bytes);
     final decoded = jsonDecode(raw) as List<Object?>;
     if (decoded.isEmpty) {
       throw const FormatException('SkyStudio JSON is empty.');
@@ -93,29 +94,5 @@ class SkyStudioJsonScoreParser implements ScoreParser {
       throw FormatException('Invalid SkyStudio key: $keyToken');
     }
     return int.parse(match.group(1)!);
-  }
-
-  String _decodeText(Uint8List bytes) {
-    try {
-      return utf8.decode(bytes);
-    } on FormatException {
-      return _decodeUtf16Le(bytes);
-    }
-  }
-
-  String _decodeUtf16Le(Uint8List bytes) {
-    final view = bytes.buffer.asByteData(
-      bytes.offsetInBytes,
-      bytes.lengthInBytes,
-    );
-    final codeUnits = <int>[];
-    var offset = 0;
-    if (bytes.length >= 2 && bytes[0] == 0xff && bytes[1] == 0xfe) {
-      offset = 2;
-    }
-    for (; offset + 1 < bytes.length; offset += 2) {
-      codeUnits.add(view.getUint16(offset, Endian.little));
-    }
-    return String.fromCharCodes(codeUnits);
   }
 }

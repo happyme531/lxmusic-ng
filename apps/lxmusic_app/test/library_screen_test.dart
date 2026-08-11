@@ -44,12 +44,8 @@ void main() {
   ) async {
     await tester.pumpWidget(
       ProviderScope(
-        overrides: [
-          musicLibraryProvider.overrideWith(buildNotifier),
-        ],
-        child: const MaterialApp(
-          home: LibraryScreen(),
-        ),
+        overrides: [musicLibraryProvider.overrideWith(buildNotifier)],
+        child: const MaterialApp(home: LibraryScreen()),
       ),
     );
     await tester.pumpAndSettle();
@@ -71,12 +67,8 @@ void main() {
   testWidgets('long press enters selection mode', (tester) async {
     await tester.pumpWidget(
       ProviderScope(
-        overrides: [
-          musicLibraryProvider.overrideWith(buildNotifier),
-        ],
-        child: const MaterialApp(
-          home: LibraryScreen(),
-        ),
+        overrides: [musicLibraryProvider.overrideWith(buildNotifier)],
+        child: const MaterialApp(home: LibraryScreen()),
       ),
     );
     await tester.pumpAndSettle();
@@ -91,12 +83,8 @@ void main() {
   testWidgets('search text stays after leaving selection mode', (tester) async {
     await tester.pumpWidget(
       ProviderScope(
-        overrides: [
-          musicLibraryProvider.overrideWith(buildNotifier),
-        ],
-        child: const MaterialApp(
-          home: LibraryScreen(),
-        ),
+        overrides: [musicLibraryProvider.overrideWith(buildNotifier)],
+        child: const MaterialApp(home: LibraryScreen()),
       ),
     );
     await tester.pumpAndSettle();
@@ -111,6 +99,37 @@ void main() {
 
     final searchBar = tester.widget<SearchBar>(find.byType(SearchBar));
     expect(searchBar.controller?.text, 'demo');
+  });
+
+  testWidgets('import result dialog lists every failed file and reason', (
+    tester,
+  ) async {
+    const report = MusicImportReport(
+      importedCount: 1,
+      failures: <MusicImportFailure>[
+        MusicImportFailure(
+          fileName: 'readme.txt',
+          kind: MusicImportFailureKind.formatDetectionFailed,
+          message: '无法识别 TXT 乐谱格式',
+        ),
+        MusicImportFailure(
+          fileName: 'empty.mid',
+          kind: MusicImportFailureKind.emptyScore,
+          message: '乐谱中没有可播放音符',
+        ),
+      ],
+    );
+
+    await tester.pumpWidget(
+      const MaterialApp(home: MusicImportResultDialog(report: report)),
+    );
+
+    expect(find.text('导入完成'), findsOneWidget);
+    expect(find.text('成功 1 个，失败 2 个'), findsOneWidget);
+    expect(find.text('readme.txt'), findsOneWidget);
+    expect(find.text('无法识别 TXT 乐谱格式'), findsOneWidget);
+    expect(find.text('empty.mid'), findsOneWidget);
+    expect(find.text('乐谱中没有可播放音符'), findsOneWidget);
   });
 }
 

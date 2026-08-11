@@ -28,15 +28,15 @@ class MusicFile {
   }
 
   Map<String, Object?> toJson() => {
-        'path': path,
-        'fileName': fileName,
-        'formatId': formatId,
-        'trackCount': trackCount,
-        'durationMs': durationMs,
-        'noteCount': noteCount,
-        'isFavorite': isFavorite,
-        'importedAt': importedAt?.toIso8601String(),
-      };
+    'path': path,
+    'fileName': fileName,
+    'formatId': formatId,
+    'trackCount': trackCount,
+    'durationMs': durationMs,
+    'noteCount': noteCount,
+    'isFavorite': isFavorite,
+    'importedAt': importedAt?.toIso8601String(),
+  };
 
   factory MusicFile.fromJson(Map<String, Object?> json) {
     return MusicFile(
@@ -52,22 +52,4 @@ class MusicFile {
           : null,
     );
   }
-}
-
-/// Try to infer the parser format from a file extension.
-String? inferFormat(String fileName) {
-  final lower = fileName.toLowerCase();
-  if (lower.endsWith('.mid') || lower.endsWith('.midi')) return 'midi';
-  if (lower.endsWith('.dms.txt') || lower.endsWith('.dms')) return 'domiso';
-  if (lower.endsWith('.skystudio.txt') ||
-      lower.endsWith('.skystudio.json') ||
-      lower.contains('skystudio')) {
-    return 'skystudio-json';
-  }
-  if (lower.endsWith('.json')) {
-    // Ambiguous — could be tonejs-json or json-score.
-    // Default to tonejs-json as it's the most common JSON format.
-    return 'tonejs-json';
-  }
-  return null;
 }

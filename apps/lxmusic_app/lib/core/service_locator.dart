@@ -1,6 +1,3 @@
-import 'dart:convert';
-import 'dart:typed_data';
-
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:lxmusic_core/lxmusic_core.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -78,11 +75,15 @@ final calibrationRepositoryProvider = Provider<MutableCalibrationRepository>((
 final parserRegistryProvider = Provider<ParserRegistry>((ref) {
   return ParserRegistry(<String, ScoreParser>{
     'domiso': DoMiSoScoreParser(),
-    'json-score': _JsonScoreParser(),
+    'json-score': const JsonScoreParser(),
     'midi': const MidiScoreParser(),
     'skystudio-json': const SkyStudioJsonScoreParser(),
     'tonejs-json': ToneJsJsonScoreParser(),
   });
+});
+
+final scoreFormatDetectorProvider = Provider<ScoreFormatDetector>((ref) {
+  return const ScoreFormatDetector();
 });
 
 // ---------------------------------------------------------------------------
@@ -96,18 +97,3 @@ final gameProfilesProvider = Provider<List<GameProfile>>((ref) {
 final layoutsProvider = Provider<List<KeyLayout>>((ref) {
   return ref.watch(layoutRepositoryProvider).list();
 });
-
-// ---------------------------------------------------------------------------
-// Internal helpers
-// ---------------------------------------------------------------------------
-
-class _JsonScoreParser implements ScoreParser {
-  @override
-  String get formatId => 'json-score';
-
-  @override
-  Score parse(Uint8List bytes) {
-    final decoded = jsonDecode(utf8.decode(bytes)) as Map<String, Object?>;
-    return Score.fromJson(decoded);
-  }
-}
