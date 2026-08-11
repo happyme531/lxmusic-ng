@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:developer' as developer;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -449,9 +450,26 @@ class MusicLibraryNotifier extends AsyncNotifier<MusicLibraryState> {
       final format = (detection as DetectedScoreFormat).formatId;
 
       late final Score score;
+      final parseWatch = Stopwatch();
+      if (format == 'midi') {
+        parseWatch.start();
+        _logMidiImport(
+          'source=picker item=${processedSources + 1}/${pickedFiles.length} '
+          'file="$fileName" bytes=${bytes.length} phase=parse_start',
+        );
+      }
       try {
         score = registry.parse(bytes: bytes, formatId: format);
-      } catch (error) {
+      } catch (error, stackTrace) {
+        if (format == 'midi') {
+          _logMidiImport(
+            'source=picker item=${processedSources + 1}/${pickedFiles.length} '
+            'file="$fileName" bytes=${bytes.length} phase=parse_error '
+            'elapsed_ms=${parseWatch.elapsedMilliseconds} error=$error',
+            error: error,
+            stackTrace: stackTrace,
+          );
+        }
         failures.add(
           MusicImportFailure(
             fileName: fileName,
@@ -461,6 +479,15 @@ class MusicLibraryNotifier extends AsyncNotifier<MusicLibraryState> {
         );
         processedSources++;
         continue;
+      }
+      if (format == 'midi') {
+        _logMidiImport(
+          'source=picker item=${processedSources + 1}/${pickedFiles.length} '
+          'file="$fileName" bytes=${bytes.length} phase=parse_done '
+          'elapsed_ms=${parseWatch.elapsedMilliseconds} '
+          'tracks=${score.tracks.length} notes=${score.totalNoteCount} '
+          'duration_ms=${score.totalDurationMs}',
+        );
       }
       if (score.totalNoteCount == 0) {
         failures.add(
@@ -676,6 +703,15 @@ class MusicLibraryNotifier extends AsyncNotifier<MusicLibraryState> {
       stopped: stopped,
       failures: failures,
       archives: archiveReports,
+    );
+  }
+
+  void _logMidiImport(String message, {Object? error, StackTrace? stackTrace}) {
+    developer.log(
+      '[MIDI_IMPORT] $message',
+      name: 'lxmusic.import',
+      error: error,
+      stackTrace: stackTrace,
     );
   }
 

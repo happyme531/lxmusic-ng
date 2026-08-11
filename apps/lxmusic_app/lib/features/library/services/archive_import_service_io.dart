@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:developer' as developer;
 import 'dart:io';
 import 'dart:isolate';
 import 'dart:math';
@@ -506,13 +507,39 @@ Future<void> _archiveWorkerMain(Map<String, Object?> arguments) async {
         }
         final formatId = (detection as DetectedScoreFormat).formatId;
         late final Score score;
+        final parseWatch = Stopwatch();
+        if (formatId == 'midi') {
+          parseWatch.start();
+          _logArchiveMidiImport(
+            'archive="$archiveFileName" item=${processedCount + 1}/${candidates.length} '
+            'file="$fileName" bytes=${scoreBytes.length} phase=parse_start',
+          );
+        }
         try {
           score = registry.parse(bytes: scoreBytes, formatId: formatId);
-        } catch (error) {
+        } catch (error, stackTrace) {
+          if (formatId == 'midi') {
+            _logArchiveMidiImport(
+              'archive="$archiveFileName" item=${processedCount + 1}/${candidates.length} '
+              'file="$fileName" bytes=${scoreBytes.length} phase=parse_error '
+              'elapsed_ms=${parseWatch.elapsedMilliseconds} error=$error',
+              error: error,
+              stackTrace: stackTrace,
+            );
+          }
           final detail = error is FormatException ? error.message : '文件结构不符合要求';
           throw _EntryImportException(
             MusicImportFailureKind.invalidFormat,
             '$formatId 文件内容无效：$detail',
+          );
+        }
+        if (formatId == 'midi') {
+          _logArchiveMidiImport(
+            'archive="$archiveFileName" item=${processedCount + 1}/${candidates.length} '
+            'file="$fileName" bytes=${scoreBytes.length} phase=parse_done '
+            'elapsed_ms=${parseWatch.elapsedMilliseconds} '
+            'tracks=${score.tracks.length} notes=${score.totalNoteCount} '
+            'duration_ms=${score.totalDurationMs}',
           );
         }
         if (score.totalNoteCount == 0) {
@@ -640,6 +667,19 @@ Future<void> _archiveWorkerMain(Map<String, Object?> arguments) async {
     input?.closeSync();
     control.close();
   }
+}
+
+void _logArchiveMidiImport(
+  String message, {
+  Object? error,
+  StackTrace? stackTrace,
+}) {
+  developer.log(
+    '[MIDI_IMPORT] source=zip $message',
+    name: 'lxmusic.import',
+    error: error,
+    stackTrace: stackTrace,
+  );
 }
 
 class _ZipCandidate {

@@ -13,10 +13,10 @@ import '../features/settings/about_screen.dart';
 import '../features/settings/settings_screen.dart';
 import '../features/workbench/workbench_screen.dart';
 
-final _rootNavigatorKey = GlobalKey<NavigatorState>();
+final rootNavigatorKey = GlobalKey<NavigatorState>();
 
 final router = GoRouter(
-  navigatorKey: _rootNavigatorKey,
+  navigatorKey: rootNavigatorKey,
   initialLocation: '/library',
   routes: [
     StatefulShellRoute.indexedStack(
@@ -84,7 +84,7 @@ final router = GoRouter(
     GoRoute(
       path: LayoutPreviewRoute.path,
       name: LayoutPreviewRoute.name,
-      parentNavigatorKey: _rootNavigatorKey,
+      parentNavigatorKey: rootNavigatorKey,
       builder: (context, state) {
         final profileId = state.pathParameters['profileId']!;
         final layoutId = state.pathParameters['layoutId']!;

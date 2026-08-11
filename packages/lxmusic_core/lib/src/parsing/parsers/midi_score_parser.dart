@@ -1,3 +1,4 @@
+import 'dart:developer' as developer;
 import 'dart:typed_data';
 
 import 'package:dart_midi_pro/dart_midi_pro.dart' as midi;
@@ -13,8 +14,19 @@ class MidiScoreParser implements ScoreParser {
 
   @override
   Score parse(Uint8List bytes) {
+    final parseWatch = Stopwatch()..start();
+    _logMidiParse('phase=decoder_start bytes=${bytes.length}');
     try {
       final midiFile = midi.MidiParser().parseMidiFromBuffer(bytes);
+      final eventCount = midiFile.tracks.fold<int>(
+        0,
+        (total, track) => total + track.length,
+      );
+      _logMidiParse(
+        'phase=decoder_done elapsed_ms=${parseWatch.elapsedMilliseconds} '
+        'header_tracks=${midiFile.header.numTracks} '
+        'decoded_tracks=${midiFile.tracks.length} events=$eventCount',
+      );
       final ticksPerQuarter = midiFile.header.ticksPerBeat;
       if (ticksPerQuarter == null) {
         throw const FormatException('SMPTE MIDI timing is not supported.');
@@ -30,6 +42,14 @@ class MidiScoreParser implements ScoreParser {
         trackIndex < midiFile.tracks.length;
         trackIndex++
       ) {
+        if (trackIndex == 0 ||
+            trackIndex == midiFile.tracks.length - 1 ||
+            trackIndex % 16 == 0) {
+          _logMidiParse(
+            'phase=track_events index=${trackIndex + 1}/${midiFile.tracks.length} '
+            'events=${midiFile.tracks[trackIndex].length}',
+          );
+        }
         final parsedTrack = _parseTrackEvents(
           midiFile.tracks[trackIndex],
           trackIndex,
@@ -41,6 +61,10 @@ class MidiScoreParser implements ScoreParser {
       final tempoMap = _TempoMap.build(
         ticksPerQuarter: ticksPerQuarter,
         events: tempoEvents,
+      );
+      _logMidiParse(
+        'phase=tempo_map_done elapsed_ms=${parseWatch.elapsedMilliseconds} '
+        'tempo_events=${tempoEvents.length} entries=${tempoMap.entries.length}',
       );
       final tracks = <Track>[];
 
@@ -112,7 +136,7 @@ class MidiScoreParser implements ScoreParser {
         }
       }
 
-      return Score(
+      final score = Score(
         tracks: tracks,
         format: SourceFormat.jsonScore,
         metadata: <String, Object?>{
@@ -122,9 +146,21 @@ class MidiScoreParser implements ScoreParser {
           'tempoChangeCount': tempoMap.entries.length,
         },
       );
+      _logMidiParse(
+        'phase=score_done elapsed_ms=${parseWatch.elapsedMilliseconds} '
+        'tracks=${score.tracks.length} notes=${score.totalNoteCount} '
+        'duration_ms=${score.totalDurationMs}',
+      );
+      return score;
     } on FormatException {
       rethrow;
-    } catch (error) {
+    } catch (error, stackTrace) {
+      _logMidiParse(
+        'phase=parse_error elapsed_ms=${parseWatch.elapsedMilliseconds} '
+        'bytes=${bytes.length} error=$error',
+        error: error,
+        stackTrace: stackTrace,
+      );
       throw FormatException('Invalid MIDI file: $error');
     }
   }
@@ -203,6 +239,15 @@ class MidiScoreParser implements ScoreParser {
       tempoEvents: tempoEvents,
     );
   }
+}
+
+void _logMidiParse(String message, {Object? error, StackTrace? stackTrace}) {
+  developer.log(
+    '[MIDI_PARSE] $message',
+    name: 'lxmusic.midi',
+    error: error,
+    stackTrace: stackTrace,
+  );
 }
 
 class _ParsedTrack {

@@ -14,6 +14,98 @@ import 'providers/music_library_provider.dart';
 import 'services/song_export_service.dart';
 import 'widgets/music_file_tile.dart';
 
+Future<void> runMusicImportFlow(
+  BuildContext context,
+  WidgetRef ref,
+  List<PickedFileData> pickedFiles,
+) async {
+  if (pickedFiles.isEmpty || !context.mounted) return;
+
+  final cancellationToken = MusicImportCancellationToken();
+  final progress = ValueNotifier<MusicImportProgress>(
+    const MusicImportProgress(
+      stage: MusicImportStage.scanning,
+      sourceLabel: '正在准备导入',
+    ),
+  );
+  final stopRequested = ValueNotifier<bool>(false);
+  final progressDialog = showDialog<void>(
+    context: context,
+    barrierDismissible: false,
+    builder: (context) => MusicImportProgressDialog(
+      progress: progress,
+      stopRequested: stopRequested,
+      onStop: () {
+        stopRequested.value = true;
+        cancellationToken.stop();
+      },
+    ),
+  );
+
+  late final MusicImportReport report;
+  try {
+    await ref.read(musicLibraryProvider.future);
+    report = await ref
+        .read(musicLibraryProvider.notifier)
+        .importFiles(
+          pickedFiles,
+          cancellationToken: cancellationToken,
+          onProgress: (value) => progress.value = value,
+          resolveConflict: (conflict) =>
+              showMusicImportConflictDialog(context, conflict),
+        );
+  } catch (error) {
+    if (context.mounted) {
+      Navigator.of(context, rootNavigator: true).pop();
+    }
+    await progressDialog;
+    progress.dispose();
+    stopRequested.dispose();
+    if (context.mounted) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('导入失败：$error')));
+    }
+    return;
+  }
+  if (context.mounted) {
+    Navigator.of(context, rootNavigator: true).pop();
+  }
+  await progressDialog;
+  progress.dispose();
+  stopRequested.dispose();
+  if (!context.mounted) return;
+
+  if (report.failures.isNotEmpty ||
+      report.archives.isNotEmpty ||
+      report.reusedCount > 0 ||
+      report.skippedCount > 0 ||
+      report.ignoredCount > 0 ||
+      report.stopped) {
+    await showDialog<void>(
+      context: context,
+      builder: (context) => MusicImportResultDialog(report: report),
+    );
+    return;
+  }
+  ScaffoldMessenger.of(
+    context,
+  ).showSnackBar(SnackBar(content: Text('成功导入 ${report.importedCount} 个文件')));
+}
+
+Future<MusicImportConflictDecision> showMusicImportConflictDialog(
+  BuildContext context,
+  MusicImportConflict conflict,
+) async {
+  final decision = await showDialog<MusicImportConflictDecision>(
+    context: context,
+    barrierDismissible: false,
+    builder: (dialogContext) => MusicImportConflictDialog(conflict: conflict),
+  );
+  return decision ??
+      const MusicImportConflictDecision(action: MusicImportConflictAction.stop);
+}
+
 class LibraryScreen extends ConsumerStatefulWidget {
   const LibraryScreen({super.key});
 
@@ -332,92 +424,7 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
     if (!context.mounted) {
       return;
     }
-
-    final cancellationToken = MusicImportCancellationToken();
-    final progress = ValueNotifier<MusicImportProgress>(
-      const MusicImportProgress(
-        stage: MusicImportStage.scanning,
-        sourceLabel: '正在准备导入',
-      ),
-    );
-    final stopRequested = ValueNotifier<bool>(false);
-    final progressDialog = showDialog<void>(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => MusicImportProgressDialog(
-        progress: progress,
-        stopRequested: stopRequested,
-        onStop: () {
-          stopRequested.value = true;
-          cancellationToken.stop();
-        },
-      ),
-    );
-
-    late final MusicImportReport report;
-    try {
-      report = await ref
-          .read(musicLibraryProvider.notifier)
-          .importFiles(
-            pickedFiles,
-            cancellationToken: cancellationToken,
-            onProgress: (value) => progress.value = value,
-            resolveConflict: (conflict) =>
-                _showImportConflictDialog(context, conflict),
-          );
-    } catch (error) {
-      if (context.mounted) {
-        Navigator.of(context, rootNavigator: true).pop();
-      }
-      await progressDialog;
-      progress.dispose();
-      stopRequested.dispose();
-      if (context.mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('导入失败：$error')));
-      }
-      return;
-    }
-    if (context.mounted) {
-      Navigator.of(context, rootNavigator: true).pop();
-    }
-    await progressDialog;
-    progress.dispose();
-    stopRequested.dispose();
-    if (!context.mounted) {
-      return;
-    }
-    if (report.failures.isNotEmpty ||
-        report.archives.isNotEmpty ||
-        report.reusedCount > 0 ||
-        report.skippedCount > 0 ||
-        report.ignoredCount > 0 ||
-        report.stopped) {
-      await showDialog<void>(
-        context: context,
-        builder: (context) => MusicImportResultDialog(report: report),
-      );
-      return;
-    }
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text('成功导入 ${report.importedCount} 个文件')));
-  }
-
-  Future<MusicImportConflictDecision> _showImportConflictDialog(
-    BuildContext context,
-    MusicImportConflict conflict,
-  ) async {
-    final decision = await showDialog<MusicImportConflictDecision>(
-      context: context,
-      barrierDismissible: false,
-      builder: (dialogContext) => MusicImportConflictDialog(conflict: conflict),
-    );
-    return decision ??
-        const MusicImportConflictDecision(
-          action: MusicImportConflictAction.stop,
-        );
+    await runMusicImportFlow(context, ref, pickedFiles);
   }
 
   Future<void> _createPlaylist(BuildContext context, WidgetRef ref) async {

@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">新·留香音乐盒</string>
+    <string name="open_music_file">导入音乐</string>
     <string name="calibration_accessibility_description">在目标游戏上方显示播放器和键位校准控件。当前版本的播放器界面尚未执行自动演奏。</string>
 </resources>

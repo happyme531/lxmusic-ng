@@ -3,6 +3,7 @@ package dev.happyme531.clxmidiplayer.ng
 import android.content.ComponentName
 import android.content.Intent
 import android.os.Build
+import android.os.Bundle
 import android.provider.Settings
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.embedding.android.FlutterActivity
@@ -12,6 +13,18 @@ import io.flutter.plugin.common.MethodChannel
 class MainActivity : FlutterActivity() {
     private var playerOverlayChannel: MethodChannel? = null
     private var accessibilityPlaybackChannel: MethodChannel? = null
+    private var externalFileOpenChannel: MethodChannel? = null
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        consumeExternalFileIntent(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        consumeExternalFileIntent(intent)
+    }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -33,6 +46,13 @@ class MainActivity : FlutterActivity() {
             channel.setMethodCallHandler(::handleAccessibilityPlaybackCall)
             AccessibilityPlaybackCoordinator.attach(channel)
         }
+        externalFileOpenChannel = MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            ExternalFileOpenCoordinator.CHANNEL_NAME,
+        ).also { channel ->
+            channel.setMethodCallHandler(::handleExternalFileOpenCall)
+            ExternalFileOpenCoordinator.attach(channel)
+        }
     }
 
     override fun cleanUpFlutterEngine(flutterEngine: FlutterEngine) {
@@ -46,7 +66,35 @@ class MainActivity : FlutterActivity() {
             channel.setMethodCallHandler(null)
         }
         accessibilityPlaybackChannel = null
+        externalFileOpenChannel?.let { channel ->
+            ExternalFileOpenCoordinator.detach(channel)
+            channel.setMethodCallHandler(null)
+        }
+        externalFileOpenChannel = null
         super.cleanUpFlutterEngine(flutterEngine)
+    }
+
+    private fun consumeExternalFileIntent(intent: Intent?) {
+        if (intent != null && ExternalFileOpenCoordinator.enqueue(this, intent)) {
+            setIntent(Intent())
+        }
+    }
+
+    private fun handleExternalFileOpenCall(
+        call: MethodCall,
+        result: MethodChannel.Result,
+    ) {
+        when (call.method) {
+            "consumePendingFiles" -> result.success(
+                ExternalFileOpenCoordinator.consumePending(),
+            )
+            "releaseCachedFiles" -> {
+                val paths = call.argument<List<String>>("paths").orEmpty()
+                ExternalFileOpenCoordinator.releaseCachedFiles(this, paths)
+                result.success(null)
+            }
+            else -> result.notImplemented()
+        }
     }
 
     private fun handleAccessibilityPlaybackCall(
