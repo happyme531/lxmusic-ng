@@ -63,7 +63,7 @@ class _PlayerOverlayLauncherButtonState
               dimension: 22,
               child: CircularProgressIndicator(strokeWidth: 2.4),
             )
-          : const Icon(Icons.picture_in_picture_alt_rounded),
+          : const Icon(Icons.rocket_launch_rounded),
     );
   }
 

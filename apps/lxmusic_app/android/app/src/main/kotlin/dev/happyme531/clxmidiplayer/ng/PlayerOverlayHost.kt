@@ -3,6 +3,7 @@ package dev.happyme531.clxmidiplayer.ng
 import android.animation.Animator
 import android.animation.AnimatorListenerAdapter
 import android.animation.ValueAnimator
+import android.content.Context
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.Rect
@@ -53,7 +54,7 @@ internal class PlayerOverlayHost(
     fun show(arguments: Map<String, Any?>): Map<String, Any?> {
         lifecycleGeneration += 1
         cancelPendingHide()
-        session = parseSession(arguments)
+        session = sessionWithSavedWindowSize(arguments)
         if (isVisible()) {
             controlChannel?.invokeMethod("updateSession", session)
             return mapOf("status" to "updated")
@@ -86,11 +87,14 @@ internal class PlayerOverlayHost(
             PixelFormat.TRANSLUCENT,
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = (safeBounds.centerX() - width / 2).coerceIn(
+            val savedPosition = savedWindowPosition()
+            x = (savedPosition?.first?.let { dp(it, density) }
+                ?: (safeBounds.centerX() - width / 2)).coerceIn(
                 safeBounds.left,
                 max(safeBounds.left, safeBounds.right - width),
             )
-            y = (safeBounds.top + dp(64f, density)).coerceIn(
+            y = (savedPosition?.second?.let { dp(it, density) }
+                ?: (safeBounds.top + dp(64f, density))).coerceIn(
                 safeBounds.top,
                 max(safeBounds.top, safeBounds.bottom - height),
             )
@@ -218,11 +222,12 @@ internal class PlayerOverlayHost(
 
     private fun handleControlCall(call: MethodCall, result: MethodChannel.Result) {
         when (call.method) {
-            "getInitialSession" -> result.success(session)
+            "getInitialSession" -> result.success(sessionWithSavedWindowSize(session))
             "resize" -> {
                 val arguments = call.arguments as? Map<*, *>
                 val widthDp = (arguments?.get("widthDp") as? Number)?.toFloat()
                 val heightDp = (arguments?.get("heightDp") as? Number)?.toFloat()
+                val animate = arguments?.get("animate") != false
                 if (widthDp == null || heightDp == null) {
                     result.error("invalid_size", "悬浮窗尺寸无效。", null)
                     return
@@ -232,7 +237,7 @@ internal class PlayerOverlayHost(
                     return
                 }
                 var replied = false
-                resize(widthDp, heightDp) { outcome ->
+                resize(widthDp, heightDp, animate) { outcome ->
                     if (!replied) {
                         replied = true
                         when (outcome) {
@@ -451,6 +456,7 @@ internal class PlayerOverlayHost(
     private fun resize(
         widthDp: Float,
         heightDp: Float,
+        animate: Boolean,
         onComplete: (ResizeOutcome) -> Unit,
     ) {
         resizeModeEnabled = false
@@ -486,7 +492,7 @@ internal class PlayerOverlayHost(
                 preDockWindowState = null
             }
         }
-        animateToRequestedSize(onComplete)
+        animateToRequestedSize(animate = animate, onComplete = onComplete)
     }
 
     private fun moveBy(deltaXDp: Float, deltaYDp: Float) {
@@ -524,7 +530,10 @@ internal class PlayerOverlayHost(
                         downWindowHeight = params.height
                         return@setOnTouchListener true
                     }
-                    if (resizeModeEnabled || !isDragHandle(event.x, density)) {
+                    if (
+                        resizeModeEnabled ||
+                        !isDragHandle(event.x, event.y, density)
+                    ) {
                         return@setOnTouchListener false
                     }
                     cancelResizeAnimation()
@@ -557,6 +566,7 @@ internal class PlayerOverlayHost(
                 MotionEvent.ACTION_UP -> {
                     if (resizing) {
                         resizing = false
+                        notifyResizeCompleted()
                         return@setOnTouchListener true
                     }
                     if (!dragging) return@setOnTouchListener false
@@ -564,14 +574,16 @@ internal class PlayerOverlayHost(
                     dragging = false
                     if (moved <= touchSlop) {
                         handleDragHandleClick()
-                    } else if (windowMode != WindowMode.edgeDocked) {
-                        dockIfNearEdge()
+                    } else {
+                        if (windowMode != WindowMode.edgeDocked) dockIfNearEdge()
+                        persistWindowPosition()
                     }
                     true
                 }
                 MotionEvent.ACTION_CANCEL -> {
                     if (resizing) {
                         resizing = false
+                        notifyResizeCompleted()
                         return@setOnTouchListener true
                     }
                     if (!dragging) return@setOnTouchListener false
@@ -622,8 +634,79 @@ internal class PlayerOverlayHost(
         updateViewLayout(view, params)
     }
 
+    private fun notifyResizeCompleted() {
+        preferences().edit()
+            .putFloat(QUICK_CONTROLS_WIDTH_KEY, requestedWidthDp)
+            .putFloat(QUICK_CONTROLS_HEIGHT_KEY, requestedHeightDp)
+            .apply()
+        persistWindowPosition()
+        sendOverlayCommand(
+            "resizeCompleted",
+            mapOf(
+                "widthDp" to requestedWidthDp,
+                "heightDp" to requestedHeightDp,
+            ),
+        )
+    }
+
+    private fun sessionWithSavedWindowSize(
+        arguments: Map<String, Any?>,
+    ): Map<String, Any?> = parseSession(arguments).toMutableMap().apply {
+        val size = savedQuickControlsSize() ?: return@apply
+        put("quickControlsWidthDp", size.first)
+        put("quickControlsHeightDp", size.second)
+    }
+
+    private fun savedQuickControlsSize(): Pair<Float, Float>? {
+        val preferences = preferences()
+        if (
+            !preferences.contains(QUICK_CONTROLS_WIDTH_KEY) ||
+            !preferences.contains(QUICK_CONTROLS_HEIGHT_KEY)
+        ) {
+            return null
+        }
+        val width = preferences.getFloat(QUICK_CONTROLS_WIDTH_KEY, 0f)
+        val height = preferences.getFloat(QUICK_CONTROLS_HEIGHT_KEY, 0f)
+        if (!width.isFinite() || !height.isFinite() || width <= 0 || height <= 0) {
+            return null
+        }
+        return Pair(
+            width.coerceIn(RESIZE_MIN_WIDTH_DP, MAX_WIDTH_DP),
+            height.coerceIn(RESIZE_MIN_HEIGHT_DP, MAX_HEIGHT_DP),
+        )
+    }
+
+    private fun savedWindowPosition(): Pair<Float, Float>? {
+        val preferences = preferences()
+        if (
+            !preferences.contains(WINDOW_X_KEY) ||
+            !preferences.contains(WINDOW_Y_KEY)
+        ) {
+            return null
+        }
+        val x = preferences.getFloat(WINDOW_X_KEY, 0f)
+        val y = preferences.getFloat(WINDOW_Y_KEY, 0f)
+        return if (x.isFinite() && y.isFinite()) Pair(x, y) else null
+    }
+
+    private fun persistWindowPosition() {
+        val params = layoutParams ?: return
+        val density = service.resources.displayMetrics.density
+        if (density <= 0) return
+        preferences().edit()
+            .putFloat(WINDOW_X_KEY, params.x / density)
+            .putFloat(WINDOW_Y_KEY, params.y / density)
+            .apply()
+    }
+
+    private fun preferences() = service.getSharedPreferences(
+        MainActivity.NATIVE_PREFERENCES,
+        Context.MODE_PRIVATE,
+    )
+
     private fun isDragHandle(
         localX: Float,
+        localY: Float,
         density: Float,
     ): Boolean {
         if (targetPickerActive) return false
@@ -632,7 +715,8 @@ internal class PlayerOverlayHost(
             WindowMode.mini -> localX >= dp(MINI_HANDLE_START_DP, density)
             WindowMode.compact,
             WindowMode.expanded,
-            -> localX <= dp(COMPACT_HANDLE_END_DP, density)
+            -> localX <= dp(COMPACT_HANDLE_END_DP, density) &&
+                localY <= dp(COMPACT_HANDLE_HEIGHT_DP, density)
         }
     }
 
@@ -798,6 +882,7 @@ internal class PlayerOverlayHost(
     }
 
     private fun animateToRequestedSize(
+        animate: Boolean = true,
         onComplete: (ResizeOutcome) -> Unit = { _ -> },
     ) {
         val view = flutterView
@@ -817,17 +902,28 @@ internal class PlayerOverlayHost(
             .coerceAtLeast(1)
             .coerceAtMost(bounds.height())
         val centerX = params.x + params.width / 2f
-        val centerY = params.y + params.height / 2f
         val targetX = dockedX(targetWidth, safeBounds) ?: (centerX - targetWidth / 2f)
             .roundToInt()
             .coerceIn(bounds.left, max(bounds.left, bounds.right - targetWidth))
-        val targetY = (centerY - targetHeight / 2f)
-            .roundToInt()
-            .coerceIn(bounds.top, max(bounds.top, bounds.bottom - targetHeight))
+        val targetY = params.y.coerceIn(
+            bounds.top,
+            max(bounds.top, bounds.bottom - targetHeight),
+        )
+        val target = WindowFrame(targetWidth, targetHeight, targetX, targetY)
+        if (!animate) {
+            cancelResizeAnimation()
+            params.width = target.width
+            params.height = target.height
+            params.x = target.x
+            params.y = target.y
+            updateViewLayout(view, params)
+            onComplete(ResizeOutcome.completed)
+            return
+        }
         animateWindow(
             view = view,
             params = params,
-            target = WindowFrame(targetWidth, targetHeight, targetX, targetY),
+            target = target,
             onComplete = onComplete,
         )
     }
@@ -936,14 +1032,14 @@ internal class PlayerOverlayHost(
     private fun normalWindowBounds(): Rect {
         val safe = safeWindowBounds()
         val margin = dp(SAFE_MARGIN_DP, service.resources.displayMetrics.density)
-        if (safe.width() <= margin * 2 || safe.height() <= margin * 2) {
+        if (safe.width() <= margin * 2) {
             return safe
         }
         return Rect(
             safe.left + margin,
-            safe.top + margin,
+            safe.top,
             safe.right - margin,
-            safe.bottom - margin,
+            safe.bottom,
         )
     }
 
@@ -1142,6 +1238,10 @@ internal class PlayerOverlayHost(
         const val CONTROL_CHANNEL =
             "dev.happyme531.clxmidiplayer.ng/player_overlay/control"
         const val DART_ENTRYPOINT = "playerOverlayMain"
+        const val QUICK_CONTROLS_WIDTH_KEY = "player_overlay_quick_controls_width_dp"
+        const val QUICK_CONTROLS_HEIGHT_KEY = "player_overlay_quick_controls_height_dp"
+        const val WINDOW_X_KEY = "player_overlay_window_x_dp"
+        const val WINDOW_Y_KEY = "player_overlay_window_y_dp"
         const val COMPACT_WIDTH_DP = 420f
         const val COMPACT_HEIGHT_DP = 82f
         const val MINI_WIDTH_DP = 104f
@@ -1152,6 +1252,7 @@ internal class PlayerOverlayHost(
         const val DOCK_THRESHOLD_DP = 4f
         const val MINI_HANDLE_START_DP = 57f
         const val COMPACT_HANDLE_END_DP = 34f
+        const val COMPACT_HANDLE_HEIGHT_DP = 45f
         const val RESIZE_HANDLE_SIZE_DP = 52f
         const val RESIZE_MIN_WIDTH_DP = 360f
         const val RESIZE_MIN_HEIGHT_DP = 205f

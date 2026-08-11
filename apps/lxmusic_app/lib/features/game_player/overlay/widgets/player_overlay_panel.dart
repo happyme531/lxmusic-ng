@@ -33,18 +33,33 @@ class PlayerOverlayPanel extends StatefulWidget {
   State<PlayerOverlayPanel> createState() => _PlayerOverlayPanelState();
 }
 
-class _PlayerOverlayPanelState extends State<PlayerOverlayPanel> {
+class _PlayerOverlayPanelState extends State<PlayerOverlayPanel>
+    with SingleTickerProviderStateMixin {
   static const _speedPresets = <double>[0.5, 0.75, 1, 1.25, 1.5, 2];
+  static const _titleDoubleTapTimeout = Duration(milliseconds: 220);
+  static const _panelRevealDuration = Duration(milliseconds: 210);
+  static const _clippedMenuStates = <PlayerOverlayPanelState>{
+    PlayerOverlayPanelState.compact,
+    PlayerOverlayPanelState.quickControls,
+    PlayerOverlayPanelState.speedEditor,
+    PlayerOverlayPanelState.songPicker,
+  };
 
   PlayerOverlayPanelState _panelState = PlayerOverlayPanelState.compact;
   PlayerOverlayPanelState _panelStateBeforeDock =
       PlayerOverlayPanelState.compact;
+  PlayerOverlayWindowSize? _transitionLayoutSize;
+  PlayerOverlayWindowSize? _resizedQuickControlsSize;
   PlayerOverlayDockSide _dockedSide = PlayerOverlayDockSide.right;
   PlayerOverlayQuickTab _quickTab = PlayerOverlayQuickTab.performance;
   _PerformanceEditor? _performanceEditor;
   _SongPickerTab _songPickerTab = _SongPickerTab.queue;
   Timer? _ticker;
   Timer? _speedCommandDebounce;
+  Timer? _titleTapTimer;
+  late final AnimationController _panelRevealController;
+  Animation<double>? _panelHeightAnimation;
+  double? _visualPanelHeight;
   DateTime _lastTick = DateTime.now();
   String _title = '暂无曲目';
   String _profileLabel = '未选择键位';
@@ -67,6 +82,7 @@ class _PlayerOverlayPanelState extends State<PlayerOverlayPanel> {
   int _sessionRevision = -1;
   int _nextCommandId = 0;
   int _lastAppliedCommandId = 0;
+  int _favoriteEffectEpoch = 0;
   List<GamePlayerTrack> _tracks = <GamePlayerTrack>[];
   Map<String, GamePlayerTrack> _tracksByFileName = <String, GamePlayerTrack>{};
   List<GamePlayerPlaylistSnapshot> _playlists = <GamePlayerPlaylistSnapshot>[];
@@ -84,6 +100,10 @@ class _PlayerOverlayPanelState extends State<PlayerOverlayPanel> {
   @override
   void initState() {
     super.initState();
+    _panelRevealController = AnimationController(
+      vsync: this,
+      duration: _panelRevealDuration,
+    );
     widget.bridge.setSessionHandler(_applySession);
     unawaited(_loadInitialSession(++_sessionGeneration));
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -107,96 +127,132 @@ class _PlayerOverlayPanelState extends State<PlayerOverlayPanel> {
   void dispose() {
     _ticker?.cancel();
     _speedCommandDebounce?.cancel();
+    _titleTapTimer?.cancel();
+    _panelRevealController.dispose();
     widget.bridge.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    return Material(
-      color: Colors.transparent,
-      child: Stack(
-        fit: StackFit.expand,
-        children: [
-          Padding(
-            padding: const EdgeInsets.all(3),
-            child: DecoratedBox(
-              decoration: BoxDecoration(
-                color: _panelColor,
-                borderRadius: BorderRadius.circular(19),
-                border: Border.all(color: _panelBorder),
-              ),
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(18),
-                child: AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 210),
-                  switchInCurve: Curves.easeOutCubic,
-                  switchOutCurve: Curves.easeInCubic,
-                  transitionBuilder: (child, animation) {
-                    final curved = CurvedAnimation(
-                      parent: animation,
-                      curve: Curves.easeOutCubic,
-                    );
-                    return FadeTransition(
-                      opacity: curved,
-                      child: ScaleTransition(
-                        scale: Tween<double>(
-                          begin: 0.97,
-                          end: 1,
-                        ).animate(curved),
-                        child: child,
-                      ),
-                    );
-                  },
-                  layoutBuilder: (currentChild, previousChildren) {
-                    return currentChild ?? const SizedBox.shrink();
-                  },
-                  child: KeyedSubtree(
-                    key: ValueKey(_panelState),
-                    child: switch (_panelState) {
-                      PlayerOverlayPanelState.mini => _buildMini(),
-                      PlayerOverlayPanelState.edgeDocked => _buildEdgeDocked(),
-                      PlayerOverlayPanelState.compact => _buildCompact(),
-                      PlayerOverlayPanelState.quickControls =>
-                        _buildQuickControls(),
-                      PlayerOverlayPanelState.speedEditor =>
-                        _buildSpeedEditor(),
-                      PlayerOverlayPanelState.songPicker => _buildSongPicker(),
-                      PlayerOverlayPanelState.targetPicker =>
-                        _buildTargetPicker(),
-                    },
-                  ),
-                ),
-              ),
-            ),
-          ),
-          if (_resizeMode &&
-              _panelState == PlayerOverlayPanelState.quickControls)
-            Positioned(
-              right: 4,
-              bottom: 4,
-              child: IgnorePointer(
-                child: Container(
-                  key: const ValueKey('player-overlay-resize-handle'),
-                  width: 38,
-                  height: 38,
-                  decoration: BoxDecoration(
-                    color: _accent.withValues(alpha: 0.92),
-                    borderRadius: const BorderRadius.only(
-                      topLeft: Radius.circular(14),
-                      bottomRight: Radius.circular(15),
+    return LayoutBuilder(
+      builder: (context, windowConstraints) {
+        final transitionSize = _transitionLayoutSize;
+        final layoutWidth = transitionSize?.width ?? windowConstraints.maxWidth;
+        final layoutHeight =
+            transitionSize?.height ?? windowConstraints.maxHeight;
+        final contentWidth = (layoutWidth - 6).clamp(0.0, double.infinity);
+        final contentHeight = (layoutHeight - 6).clamp(0.0, double.infinity);
+        return Material(
+          color: Colors.transparent,
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              AnimatedBuilder(
+                animation: _panelRevealController,
+                child: RepaintBoundary(
+                  child: SizedBox(
+                    width: contentWidth,
+                    height: contentHeight,
+                    child: KeyedSubtree(
+                      key: ValueKey(_panelState),
+                      child: switch (_panelState) {
+                        PlayerOverlayPanelState.mini => _buildMini(),
+                        PlayerOverlayPanelState.edgeDocked =>
+                          _buildEdgeDocked(),
+                        PlayerOverlayPanelState.compact => _buildCompact(),
+                        PlayerOverlayPanelState.quickControls =>
+                          _buildQuickControls(),
+                        PlayerOverlayPanelState.speedEditor =>
+                          _buildSpeedEditor(),
+                        PlayerOverlayPanelState.songPicker =>
+                          _buildSongPicker(),
+                        PlayerOverlayPanelState.targetPicker =>
+                          _buildTargetPicker(),
+                      },
                     ),
                   ),
-                  child: const Icon(
-                    Icons.south_east_rounded,
-                    size: 21,
-                    color: Color(0xFF143B34),
+                ),
+                builder: (context, child) {
+                  final visiblePanelHeight =
+                      (_panelHeightAnimation?.value ??
+                              _visualPanelHeight ??
+                              windowConstraints.maxHeight)
+                          .clamp(0.0, windowConstraints.maxHeight);
+                  return Positioned(
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    height: visiblePanelHeight,
+                    child: Padding(
+                      padding: const EdgeInsets.all(3),
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          color: _panelColor,
+                          borderRadius: BorderRadius.circular(19),
+                          border: Border.all(color: _panelBorder),
+                        ),
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(18),
+                          child: OverflowBox(
+                            alignment: Alignment.topLeft,
+                            minWidth: contentWidth,
+                            maxWidth: contentWidth,
+                            minHeight: contentHeight,
+                            maxHeight: contentHeight,
+                            child: child,
+                          ),
+                        ),
+                      ),
+                    ),
+                  );
+                },
+              ),
+              if (_resizeMode &&
+                  _panelState == PlayerOverlayPanelState.quickControls)
+                Positioned(
+                  right: 4,
+                  bottom: 4,
+                  child: IgnorePointer(
+                    child: Container(
+                      key: const ValueKey('player-overlay-resize-handle'),
+                      width: 38,
+                      height: 38,
+                      decoration: BoxDecoration(
+                        color: _accent.withValues(alpha: 0.92),
+                        borderRadius: const BorderRadius.only(
+                          topLeft: Radius.circular(14),
+                          bottomRight: Radius.circular(15),
+                        ),
+                      ),
+                      child: const Icon(
+                        Icons.south_east_rounded,
+                        size: 21,
+                        color: Color(0xFF143B34),
+                      ),
+                    ),
                   ),
                 ),
-              ),
-            ),
-        ],
-      ),
+              if (_favoriteEffectEpoch > 0)
+                Positioned(
+                  key: ValueKey(
+                    'player-overlay-favorite-burst-$_favoriteEffectEpoch',
+                  ),
+                  left: 28,
+                  top: 0,
+                  width: 160,
+                  height: 72,
+                  child: IgnorePointer(
+                    child: _FavoriteBurst(
+                      epoch: _favoriteEffectEpoch,
+                      onCompleted: _finishFavoriteEffect,
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        );
+      },
     );
   }
 
@@ -306,8 +362,7 @@ class _PlayerOverlayPanelState extends State<PlayerOverlayPanel> {
           onSeek: _seekToProgress,
           onSeekStart: _startScrubbing,
           onSeekEnd: _endScrubbing,
-          onTitlePressed: _toggleSongPicker,
-          onTitleDoublePressed: _toggleFavorite,
+          onTitlePressed: _handleTitleTap,
           onPrevious: _previousSong,
           onTogglePlayback: _togglePlayback,
           onStop: _stopAndReset,
@@ -690,8 +745,7 @@ class _PlayerOverlayPanelState extends State<PlayerOverlayPanel> {
                       const SizedBox(width: 38),
                       Expanded(
                         child: Text(
-                          '${_speed.toStringAsFixed(2)}×  ·  '
-                          '${(120 * _speed).round()} BPM',
+                          '${_speed.toStringAsFixed(2)}×',
                           textAlign: TextAlign.center,
                           style: const TextStyle(
                             color: _accent,
@@ -876,8 +930,21 @@ class _PlayerOverlayPanelState extends State<PlayerOverlayPanel> {
     return ListView.builder(
       padding: EdgeInsets.zero,
       physics: const ClampingScrollPhysics(),
-      itemCount: songs.length,
+      itemCount:
+          songs.length + (_songPickerTab == _SongPickerTab.favorites ? 1 : 0),
       itemBuilder: (context, index) {
+        if (index == songs.length) {
+          return const SizedBox(
+            key: ValueKey('player-overlay-favorites-hint'),
+            height: 34,
+            child: Center(
+              child: Text(
+                '双击歌名即可收藏',
+                style: TextStyle(color: _muted, fontSize: 10),
+              ),
+            ),
+          );
+        }
         final song = songs[index];
         final selected = song.fileName == _currentFileName;
         return InkWell(
@@ -942,8 +1009,7 @@ class _PlayerOverlayPanelState extends State<PlayerOverlayPanel> {
         onSeek: _seekToProgress,
         onSeekStart: _startScrubbing,
         onSeekEnd: _endScrubbing,
-        onTitlePressed: _toggleSongPicker,
-        onTitleDoublePressed: _toggleFavorite,
+        onTitlePressed: _handleTitleTap,
         onPrevious: _previousSong,
         onTogglePlayback: _togglePlayback,
         onStop: _stopAndReset,
@@ -1073,6 +1139,14 @@ class _PlayerOverlayPanelState extends State<PlayerOverlayPanel> {
     try {
       final session = await widget.bridge.loadInitialSession();
       if (!mounted || generation != _sessionGeneration) return;
+      final restoredSize = _windowSizeFromMap(
+        session,
+        widthKey: 'quickControlsWidthDp',
+        heightKey: 'quickControlsHeightDp',
+      );
+      if (restoredSize != null) {
+        setState(() => _resizedQuickControlsSize = restoredSize);
+      }
       await _applySession(session);
     } catch (_) {
       // Keep the preview defaults if the host is unavailable during startup.
@@ -1087,6 +1161,16 @@ class _PlayerOverlayPanelState extends State<PlayerOverlayPanel> {
         return;
       case 'expandFromMini':
         await _setPanelState(PlayerOverlayPanelState.compact);
+        return;
+      case 'resizeCompleted':
+        final resizedSize = _windowSizeFromMap(
+          session,
+          widthKey: 'widthDp',
+          heightKey: 'heightDp',
+        );
+        if (resizedSize != null) {
+          setState(() => _resizedQuickControlsSize = resizedSize);
+        }
         return;
       case 'dockToEdge':
         await _deactivateTargetPicker();
@@ -1398,12 +1482,19 @@ class _PlayerOverlayPanelState extends State<PlayerOverlayPanel> {
     final fileName = _currentFileName;
     if (fileName == null) return;
     setState(() {
-      if (!_favoriteFileNames.add(fileName)) {
+      if (_favoriteFileNames.add(fileName)) {
+        _favoriteEffectEpoch += 1;
+      } else {
         _favoriteFileNames.remove(fileName);
       }
       _favoriteSongs = _tracksForNames(_favoriteFileNames);
     });
     _sendAction('toggleFavorite', <String, Object?>{'fileName': fileName});
+  }
+
+  void _finishFavoriteEffect(int epoch) {
+    if (!mounted || _favoriteEffectEpoch != epoch) return;
+    setState(() => _favoriteEffectEpoch = 0);
   }
 
   IconData get _playbackModeIcon => switch (_playbackModeIndex) {
@@ -1504,6 +1595,20 @@ class _PlayerOverlayPanelState extends State<PlayerOverlayPanel> {
     }
     setState(() => _songPickerTab = _SongPickerTab.queue);
     unawaited(_setPanelState(PlayerOverlayPanelState.songPicker));
+  }
+
+  void _handleTitleTap() {
+    final pendingTap = _titleTapTimer;
+    if (pendingTap?.isActive == true) {
+      pendingTap!.cancel();
+      _titleTapTimer = null;
+      _toggleFavorite();
+      return;
+    }
+    _titleTapTimer = Timer(_titleDoubleTapTimeout, () {
+      _titleTapTimer = null;
+      if (mounted) _toggleSongPicker();
+    });
   }
 
   void _toggleSpeedEditor() {
@@ -1639,14 +1744,35 @@ class _PlayerOverlayPanelState extends State<PlayerOverlayPanel> {
         _panelState == PlayerOverlayPanelState.targetPicker &&
         state != PlayerOverlayPanelState.targetPicker;
     if (leavingTargetPicker) await _deactivateTargetPicker();
+    if (!mounted) return;
+    final previousState = _panelState;
     final transition = ++_transitionEpoch;
-    final currentSize = PlayerOverlayWindowSize.forState(_panelState);
-    final targetSize = PlayerOverlayWindowSize.forState(state);
-    final expands =
-        targetSize.width * targetSize.height >
-        currentSize.width * currentSize.height;
+    _panelRevealController.stop();
+    _panelHeightAnimation = null;
+    final currentSize = _windowSizeForState(previousState);
+    final targetSize = _windowSizeForState(state);
+    final usesClippedTransition =
+        _clippedMenuStates.contains(previousState) &&
+        _clippedMenuStates.contains(state) &&
+        currentSize.width == targetSize.width;
 
-    if (!expands) setState(() => _panelState = state);
+    if (usesClippedTransition) {
+      await _setPanelStateWithClippedReveal(
+        previousState: previousState,
+        state: state,
+        currentSize: currentSize,
+        targetSize: targetSize,
+        transition: transition,
+      );
+      return;
+    }
+
+    setState(() {
+      _panelState = state;
+      _transitionLayoutSize = targetSize;
+      _visualPanelHeight = null;
+      _panelHeightAnimation = null;
+    });
     var resizeSucceeded = false;
     try {
       await widget.bridge.resize(targetSize);
@@ -1654,13 +1780,14 @@ class _PlayerOverlayPanelState extends State<PlayerOverlayPanel> {
     } catch (_) {
       // Keep the Flutter controls usable if the native host is disappearing.
     }
-    if (!mounted ||
-        transition != _transitionEpoch ||
-        !expands ||
-        !resizeSucceeded) {
+    if (!mounted || transition != _transitionEpoch) {
       return;
     }
-    setState(() => _panelState = state);
+    setState(() {
+      _transitionLayoutSize = null;
+      if (!resizeSucceeded) _panelState = previousState;
+    });
+    if (!resizeSucceeded) return;
     if (state == PlayerOverlayPanelState.targetPicker) {
       try {
         await widget.bridge.setTargetPickerActive(true);
@@ -1668,6 +1795,117 @@ class _PlayerOverlayPanelState extends State<PlayerOverlayPanel> {
         // Search still remains usable with a hardware keyboard if focus setup
         // is unavailable in a preview host.
       }
+    }
+  }
+
+  Future<void> _setPanelStateWithClippedReveal({
+    required PlayerOverlayPanelState previousState,
+    required PlayerOverlayPanelState state,
+    required PlayerOverlayWindowSize currentSize,
+    required PlayerOverlayWindowSize targetSize,
+    required int transition,
+  }) async {
+    final startHeight = _visualPanelHeight ?? currentSize.height;
+    final expands = targetSize.height > startHeight;
+
+    if (expands) {
+      setState(() {
+        _panelState = state;
+        _transitionLayoutSize = targetSize;
+        _visualPanelHeight = startHeight;
+      });
+      if (!await _resizePanelWindow(targetSize, animate: false)) {
+        if (mounted && transition == _transitionEpoch) {
+          setState(() {
+            _panelState = previousState;
+            _transitionLayoutSize = null;
+            _visualPanelHeight = null;
+            _panelHeightAnimation = null;
+          });
+        }
+        return;
+      }
+      if (!mounted || transition != _transitionEpoch) return;
+      await _animatePanelHeight(startHeight, targetSize.height);
+      if (!mounted || transition != _transitionEpoch) return;
+      setState(() {
+        _transitionLayoutSize = null;
+        _visualPanelHeight = null;
+        _panelHeightAnimation = null;
+      });
+      return;
+    }
+
+    setState(() {
+      _transitionLayoutSize = currentSize;
+      _visualPanelHeight = startHeight;
+    });
+    await _animatePanelHeight(startHeight, targetSize.height);
+    if (!mounted || transition != _transitionEpoch) return;
+    setState(() {
+      _panelState = state;
+      _transitionLayoutSize = targetSize;
+      _visualPanelHeight = targetSize.height;
+      _panelHeightAnimation = null;
+    });
+    final resizeSucceeded = await _resizePanelWindow(
+      targetSize,
+      animate: false,
+    );
+    if (!mounted || transition != _transitionEpoch) return;
+    setState(() {
+      _transitionLayoutSize = null;
+      _visualPanelHeight = null;
+      _panelHeightAnimation = null;
+      if (!resizeSucceeded) _panelState = previousState;
+    });
+  }
+
+  Future<bool> _resizePanelWindow(
+    PlayerOverlayWindowSize size, {
+    required bool animate,
+  }) async {
+    try {
+      await widget.bridge.resize(size, animate: animate);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  PlayerOverlayWindowSize _windowSizeForState(PlayerOverlayPanelState state) {
+    if (state == PlayerOverlayPanelState.quickControls) {
+      final resizedSize = _resizedQuickControlsSize;
+      if (resizedSize != null) return resizedSize;
+    }
+    return PlayerOverlayWindowSize.forState(state);
+  }
+
+  PlayerOverlayWindowSize? _windowSizeFromMap(
+    Map<String, Object?> values, {
+    required String widthKey,
+    required String heightKey,
+  }) {
+    final width = (values[widthKey] as num?)?.toDouble();
+    final height = (values[heightKey] as num?)?.toDouble();
+    if (width == null || height == null) return null;
+    if (!width.isFinite || !height.isFinite || width <= 0 || height <= 0) {
+      return null;
+    }
+    return PlayerOverlayWindowSize(width, height);
+  }
+
+  Future<void> _animatePanelHeight(double from, double to) async {
+    _panelHeightAnimation = Tween<double>(begin: from, end: to).animate(
+      CurvedAnimation(
+        parent: _panelRevealController,
+        curve: Curves.easeOutCubic,
+      ),
+    );
+    try {
+      await _panelRevealController.forward(from: 0).orCancel;
+    } on TickerCanceled {
+      // A newer panel transition owns the visual height now.
     }
   }
 
@@ -1680,6 +1918,118 @@ class _PlayerOverlayPanelState extends State<PlayerOverlayPanel> {
     final minutes = totalSeconds ~/ 60;
     final seconds = totalSeconds % 60;
     return '$minutes:${seconds.toString().padLeft(2, '0')}';
+  }
+}
+
+class _FavoriteBurst extends StatefulWidget {
+  const _FavoriteBurst({required this.epoch, required this.onCompleted});
+
+  final int epoch;
+  final ValueChanged<int> onCompleted;
+
+  @override
+  State<_FavoriteBurst> createState() => _FavoriteBurstState();
+}
+
+class _FavoriteBurstState extends State<_FavoriteBurst>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 720),
+    );
+    _controller.forward().whenCompleteOrCancel(() {
+      if (mounted) widget.onCompleted(widget.epoch);
+    });
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ExcludeSemantics(
+      child: RepaintBoundary(
+        child: AnimatedBuilder(
+          animation: _controller,
+          builder: (context, _) {
+            final time = _controller.value;
+            final heartEntry = Curves.elasticOut.transform(
+              (time / 0.58).clamp(0.0, 1.0),
+            );
+            final heartOpacity = time < 0.64
+                ? 1.0
+                : ((1 - time) / 0.36).clamp(0.0, 1.0);
+            final particleProgress = ((time - 0.06) / 0.86).clamp(0.0, 1.0);
+            final particleDistance =
+                9 + 34 * Curves.easeOutCubic.transform(particleProgress);
+            final particleOpacity = (1 - particleProgress).clamp(0.0, 1.0);
+
+            return Stack(
+              clipBehavior: Clip.none,
+              alignment: Alignment.center,
+              children: [
+                for (var index = 0; index < 8; index++)
+                  Transform.translate(
+                    offset: Offset(
+                      math.cos(math.pi * 2 * index / 8) * particleDistance,
+                      math.sin(math.pi * 2 * index / 8) *
+                          particleDistance *
+                          0.62,
+                    ),
+                    child: Opacity(
+                      opacity: particleOpacity,
+                      child: Icon(
+                        index.isEven
+                            ? Icons.favorite_rounded
+                            : Icons.auto_awesome_rounded,
+                        size: index.isEven ? 8 : 7,
+                        color: index % 3 == 0
+                            ? const Color(0xFFFFD166)
+                            : const Color(0xFFFF7FA3),
+                      ),
+                    ),
+                  ),
+                Opacity(
+                  opacity: heartOpacity,
+                  child: Transform.scale(
+                    scale: 0.32 + heartEntry,
+                    child: const DecoratedBox(
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: Color(0xD9361F2A),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Color(0x99FF5F8F),
+                            blurRadius: 12,
+                            spreadRadius: 2,
+                          ),
+                        ],
+                      ),
+                      child: SizedBox.square(
+                        dimension: 28,
+                        child: Icon(
+                          Icons.favorite_rounded,
+                          size: 17,
+                          color: Color(0xFFFF83A5),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            );
+          },
+        ),
+      ),
+    );
   }
 }
 
@@ -1699,7 +2049,6 @@ class _CompactHeader extends StatelessWidget {
     required this.onSeekStart,
     required this.onSeekEnd,
     required this.onTitlePressed,
-    required this.onTitleDoublePressed,
     required this.onPrevious,
     required this.onTogglePlayback,
     required this.onStop,
@@ -1723,7 +2072,6 @@ class _CompactHeader extends StatelessWidget {
   final VoidCallback onSeekStart;
   final VoidCallback onSeekEnd;
   final VoidCallback onTitlePressed;
-  final VoidCallback onTitleDoublePressed;
   final VoidCallback onPrevious;
   final VoidCallback onTogglePlayback;
   final VoidCallback onStop;
@@ -1749,7 +2097,6 @@ class _CompactHeader extends StatelessWidget {
                 child: InkWell(
                   key: const ValueKey('player-overlay-title'),
                   onTap: onTitlePressed,
-                  onDoubleTap: onTitleDoublePressed,
                   child: Padding(
                     padding: const EdgeInsets.only(right: 3),
                     child: Column(
@@ -2326,7 +2673,6 @@ class _SettingSubmenuHeader extends StatelessWidget {
                 ),
               ),
               const Spacer(),
-              const Text('返回', style: TextStyle(color: _muted, fontSize: 8.5)),
               const SizedBox(width: 7),
             ],
           ),

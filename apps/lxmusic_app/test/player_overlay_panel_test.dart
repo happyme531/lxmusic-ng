@@ -872,7 +872,10 @@ class _FakePlayerOverlayBridge implements PlayerOverlayBridge {
   }
 
   @override
-  Future<void> resize(PlayerOverlayWindowSize size) async {
+  Future<void> resize(
+    PlayerOverlayWindowSize size, {
+    bool animate = true,
+  }) async {
     sizes.add(size);
   }
 

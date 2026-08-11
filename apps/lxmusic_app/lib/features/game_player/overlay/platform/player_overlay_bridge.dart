@@ -12,7 +12,7 @@ abstract interface class PlayerOverlayBridge {
 
   void setSessionHandler(PlayerOverlaySessionHandler? handler);
 
-  Future<void> resize(PlayerOverlayWindowSize size);
+  Future<void> resize(PlayerOverlayWindowSize size, {bool animate = true});
 
   Future<void> moveBy(double deltaX, double deltaY);
 
@@ -64,10 +64,11 @@ class MethodChannelPlayerOverlayBridge implements PlayerOverlayBridge {
   }
 
   @override
-  Future<void> resize(PlayerOverlayWindowSize size) {
+  Future<void> resize(PlayerOverlayWindowSize size, {bool animate = true}) {
     return channel.invokeMethod<void>('resize', <String, Object?>{
       'widthDp': size.width,
       'heightDp': size.height,
+      'animate': animate,
     });
   }
 

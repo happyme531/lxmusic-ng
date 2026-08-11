@@ -98,7 +98,10 @@ class _CalibrationBridge implements PlayerOverlayBridge {
   void setSessionHandler(PlayerOverlaySessionHandler? handler) {}
 
   @override
-  Future<void> resize(PlayerOverlayWindowSize size) async {}
+  Future<void> resize(
+    PlayerOverlayWindowSize size, {
+    bool animate = true,
+  }) async {}
 
   @override
   Future<void> moveBy(double deltaX, double deltaY) async {}
