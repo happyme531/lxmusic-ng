@@ -20,6 +20,10 @@ class MusicFile {
   bool isFavorite;
   final DateTime? importedAt;
 
+  /// Cached once because filtering and sorting may inspect this value many
+  /// times for large libraries.
+  late final String normalizedFileName = fileName.toLowerCase();
+
   String get durationLabel {
     final totalSeconds = durationMs ~/ 1000;
     final minutes = totalSeconds ~/ 60;

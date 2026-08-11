@@ -107,6 +107,10 @@ class MethodChannelPlayerOverlayPlatform implements PlayerOverlayPlatform {
 
   final MethodChannel channel;
   PlayerOverlayActionHandler? _actionHandler;
+  GamePlayerSnapshot? _lastSentSnapshot;
+  GamePlayerSnapshot? _pendingSnapshot;
+  Future<void>? _updateLoop;
+  bool _disposed = false;
 
   @override
   Future<PlayerOverlayPlatformState> getState() async {
@@ -130,8 +134,34 @@ class MethodChannelPlayerOverlayPlatform implements PlayerOverlayPlatform {
       channel.invokeMethod<void>('openAccessibilitySettings');
 
   @override
-  Future<void> updateOverlay(GamePlayerSnapshot snapshot) =>
-      channel.invokeMethod<void>('updateOverlay', snapshot.toMap());
+  Future<void> updateOverlay(GamePlayerSnapshot snapshot) {
+    if (_disposed) return Future<void>.value();
+    _pendingSnapshot = snapshot;
+    return _updateLoop ??= _drainUpdates();
+  }
+
+  Future<void> _drainUpdates() async {
+    try {
+      while (!_disposed) {
+        final snapshot = _pendingSnapshot;
+        if (snapshot == null) break;
+        _pendingSnapshot = null;
+        await channel.invokeMethod<void>(
+          'updateOverlay',
+          snapshot.toOverlayUpdateMap(_lastSentSnapshot),
+        );
+        _lastSentSnapshot = snapshot;
+      }
+    } catch (_) {
+      // Force the next attempt to carry a complete catalog if this channel
+      // update did not reach the native overlay host.
+      _pendingSnapshot = null;
+      _lastSentSnapshot = null;
+      rethrow;
+    } finally {
+      _updateLoop = null;
+    }
+  }
 
   @override
   void setActionHandler(PlayerOverlayActionHandler? handler) {
@@ -150,6 +180,9 @@ class MethodChannelPlayerOverlayPlatform implements PlayerOverlayPlatform {
 
   @override
   void dispose() {
+    _disposed = true;
+    _pendingSnapshot = null;
+    _lastSentSnapshot = null;
     _actionHandler = null;
     channel.setMethodCallHandler(null);
   }

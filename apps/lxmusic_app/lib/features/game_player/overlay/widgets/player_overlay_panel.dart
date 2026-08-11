@@ -64,11 +64,15 @@ class _PlayerOverlayPanelState extends State<PlayerOverlayPanel> {
   int _nextCommandId = 0;
   int _lastAppliedCommandId = 0;
   List<GamePlayerTrack> _tracks = <GamePlayerTrack>[];
+  Map<String, GamePlayerTrack> _tracksByFileName = <String, GamePlayerTrack>{};
   List<GamePlayerPlaylistSnapshot> _playlists = <GamePlayerPlaylistSnapshot>[];
   String _queuePlaylistId = 'all';
   List<String> _queueFileNames = <String>[];
+  List<GamePlayerTrack> _queueSongs = <GamePlayerTrack>[];
   Set<String> _favoriteFileNames = <String>{};
+  List<GamePlayerTrack> _favoriteSongs = <GamePlayerTrack>[];
   List<String> _historyFileNames = <String>[];
+  List<GamePlayerTrack> _historySongs = <GamePlayerTrack>[];
   String? _currentFileName;
 
   static const _playbackModes = <String>['顺序播放', '列表循环', '单曲循环', '随机播放'];
@@ -953,10 +957,7 @@ class _PlayerOverlayPanelState extends State<PlayerOverlayPanel> {
 
   GamePlayerTrack? _trackByFileName(String? fileName) {
     if (fileName == null) return null;
-    for (final track in _tracks) {
-      if (track.fileName == fileName) return track;
-    }
-    return null;
+    return _tracksByFileName[fileName];
   }
 
   List<GamePlayerTrack> _tracksForNames(Iterable<String> fileNames) =>
@@ -964,17 +965,24 @@ class _PlayerOverlayPanelState extends State<PlayerOverlayPanel> {
         for (final fileName in fileNames) ?_trackByFileName(fileName),
       ];
 
-  List<GamePlayerTrack> get _queueSongs => _tracksForNames(_queueFileNames);
-
-  List<GamePlayerTrack> get _favoriteSongs =>
-      _tracksForNames(_favoriteFileNames);
-
   List<GamePlayerTrack> get _songsForPickerTab => switch (_songPickerTab) {
     _SongPickerTab.playlists => const <GamePlayerTrack>[],
     _SongPickerTab.queue => _queueSongs,
     _SongPickerTab.favorites => _favoriteSongs,
-    _SongPickerTab.history => _tracksForNames(_historyFileNames),
+    _SongPickerTab.history => _historySongs,
   };
+
+  void _indexTracks() {
+    _tracksByFileName = <String, GamePlayerTrack>{
+      for (final track in _tracks) track.fileName: track,
+    };
+  }
+
+  void _refreshSongLists() {
+    _queueSongs = _tracksForNames(_queueFileNames);
+    _favoriteSongs = _tracksForNames(_favoriteFileNames);
+    _historySongs = _tracksForNames(_historyFileNames);
+  }
 
   String get _currentSubtitle {
     final error = _playbackError?.trim();
@@ -1035,19 +1043,25 @@ class _PlayerOverlayPanelState extends State<PlayerOverlayPanel> {
         });
         return;
     }
+    if (session['partial'] == true) {
+      _applyPartialSession(session);
+      return;
+    }
     if (session['version'] == 1 || session['tracks'] is List) {
       final snapshot = GamePlayerSnapshot.fromMap(session);
       if (snapshot.revision < _sessionRevision) return;
       _sessionRevision = snapshot.revision;
       setState(() {
         _tracks = List<GamePlayerTrack>.of(snapshot.tracks);
+        _indexTracks();
         _playlists = List<GamePlayerPlaylistSnapshot>.of(snapshot.playlists);
         _queuePlaylistId = snapshot.queuePlaylistId;
         _queueFileNames = List<String>.of(snapshot.queueFileNames);
         _favoriteFileNames = snapshot.favoriteFileNames.toSet();
         _historyFileNames = List<String>.of(snapshot.historyFileNames);
+        _refreshSongLists();
         _currentFileName = snapshot.currentFileName;
-        final track = snapshot.currentTrack;
+        final track = _trackByFileName(_currentFileName);
         _title = track?.displayName ?? '暂无曲目';
         _durationMs = snapshot.durationMs.clamp(1, 1 << 31);
         _positionMs = snapshot.positionMs.clamp(0, _durationMs);
@@ -1059,7 +1073,7 @@ class _PlayerOverlayPanelState extends State<PlayerOverlayPanel> {
         _transpose = snapshot.transpose;
         _durationMode = snapshot.durationMode;
         final profile = snapshot.profileLabel?.trim();
-        if (profile != null && profile.isNotEmpty) _profileLabel = profile;
+        _profileLabel = profile == null || profile.isEmpty ? '未选择键位' : profile;
         _lastTick = DateTime.now();
       });
       return;
@@ -1087,11 +1101,121 @@ class _PlayerOverlayPanelState extends State<PlayerOverlayPanel> {
         legacyTrack,
         ..._tracks.where((track) => track.fileName != legacyFileName),
       ];
+      _indexTracks();
       _currentFileName = legacyFileName;
       if (!_queueFileNames.contains(legacyFileName)) {
         _queueFileNames.insert(0, legacyFileName);
       }
       _rememberSong(legacyTrack);
+      _refreshSongLists();
+    });
+  }
+
+  void _applyPartialSession(Map<String, Object?> session) {
+    final revision = (session['revision'] as num?)?.toInt();
+    if (revision != null && revision < _sessionRevision) return;
+    if (revision != null) _sessionRevision = revision;
+
+    setState(() {
+      var tracksChanged = false;
+      var queueChanged = false;
+      var favoritesChanged = false;
+      var historyChanged = false;
+
+      if (session['tracks'] case final List<Object?> rawTracks) {
+        _tracks = rawTracks
+            .whereType<Map>()
+            .map(
+              (track) =>
+                  GamePlayerTrack.fromMap(Map<Object?, Object?>.from(track)),
+            )
+            .toList(growable: false);
+        _indexTracks();
+        tracksChanged = true;
+      }
+      if (session['playlists'] case final List<Object?> rawPlaylists) {
+        _playlists = rawPlaylists
+            .whereType<Map>()
+            .map(
+              (playlist) => GamePlayerPlaylistSnapshot.fromMap(
+                Map<Object?, Object?>.from(playlist),
+              ),
+            )
+            .toList(growable: false);
+      }
+      if (session['queuePlaylistId'] case final String playlistId) {
+        _queuePlaylistId = playlistId;
+      }
+      if (session['queueFileNames'] case final List<Object?> fileNames) {
+        _queueFileNames = fileNames.whereType<String>().toList(growable: false);
+        queueChanged = true;
+      }
+      if (session['favoriteFileNames'] case final List<Object?> fileNames) {
+        _favoriteFileNames = fileNames.whereType<String>().toSet();
+        favoritesChanged = true;
+      }
+      if (session['historyFileNames'] case final List<Object?> fileNames) {
+        _historyFileNames = fileNames.whereType<String>().toList(
+          growable: true,
+        );
+        historyChanged = true;
+      }
+      if (session.containsKey('currentFileName')) {
+        _currentFileName = session['currentFileName'] as String?;
+      }
+      final title = session['title'] as String?;
+      if (title != null && title.trim().isNotEmpty) {
+        _title = title.trim();
+      } else if (session.containsKey('currentFileName')) {
+        _title = _trackByFileName(_currentFileName)?.displayName ?? '暂无曲目';
+      }
+      final duration = (session['durationMs'] as num?)?.toInt();
+      if (duration != null && duration > 0) _durationMs = duration;
+      final position = (session['positionMs'] as num?)?.toInt();
+      if (position != null) {
+        _positionMs = position.clamp(0, _durationMs);
+      }
+      if (session['isPlaying'] case final bool isPlaying) {
+        _isPlaying = isPlaying;
+      }
+      if (session['playbackStatus'] case final String playbackStatus) {
+        _playbackStatus = playbackStatus;
+      }
+      if (session.containsKey('playbackError')) {
+        _playbackError = session['playbackError'] as String?;
+      }
+      if (session['speed'] case final num speed) {
+        _speed = speed.toDouble().clamp(0.5, 2);
+      }
+      if (session['playbackModeIndex'] case final num modeIndex) {
+        _playbackModeIndex = modeIndex.toInt() % _playbackModes.length;
+      }
+      if (session['transpose'] case final num transpose) {
+        _transpose = transpose.toInt().clamp(-24, 24);
+      }
+      if (session['durationMode'] case final String durationMode) {
+        _durationMode = GamePlayerDurationMode.values.firstWhere(
+          (mode) => mode.name == durationMode,
+          orElse: () => _durationMode,
+        );
+      }
+      if (session.containsKey('profileLabel')) {
+        final profile = (session['profileLabel'] as String?)?.trim();
+        _profileLabel = profile == null || profile.isEmpty ? '未选择键位' : profile;
+      }
+
+      if (tracksChanged) {
+        _refreshSongLists();
+      } else {
+        if (queueChanged) _queueSongs = _tracksForNames(_queueFileNames);
+        if (favoritesChanged) {
+          _favoriteSongs = _tracksForNames(_favoriteFileNames);
+        }
+        if (historyChanged) {
+          _historySongs = _tracksForNames(_historyFileNames);
+        }
+      }
+      _lastTick = DateTime.now();
     });
   }
 
@@ -1172,6 +1296,7 @@ class _PlayerOverlayPanelState extends State<PlayerOverlayPanel> {
     setState(() {
       _queuePlaylistId = playlist.id;
       _queueFileNames = List<String>.of(playlist.fileNames);
+      _queueSongs = _tracksForNames(_queueFileNames);
       _songPickerTab = _SongPickerTab.queue;
     });
     _sendAction('selectPlaylist', <String, Object?>{'playlistId': playlist.id});
@@ -1181,6 +1306,7 @@ class _PlayerOverlayPanelState extends State<PlayerOverlayPanel> {
     _historyFileNames.remove(song.fileName);
     _historyFileNames.insert(0, song.fileName);
     if (_historyFileNames.length > 20) _historyFileNames.removeLast();
+    _historySongs = _tracksForNames(_historyFileNames);
   }
 
   void _cyclePlaybackMode() {
@@ -1197,6 +1323,7 @@ class _PlayerOverlayPanelState extends State<PlayerOverlayPanel> {
       if (!_favoriteFileNames.add(fileName)) {
         _favoriteFileNames.remove(fileName);
       }
+      _favoriteSongs = _tracksForNames(_favoriteFileNames);
     });
     _sendAction('toggleFavorite', <String, Object?>{'fileName': fileName});
   }

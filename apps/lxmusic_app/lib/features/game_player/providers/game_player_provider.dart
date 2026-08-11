@@ -28,6 +28,7 @@ class GamePlayerController extends Notifier<GamePlayerSnapshot> {
   final Random _random = Random();
   AccessibilityPlaybackPlatform? _playbackPlatform;
   GamePlaybackPlanService? _planService;
+  _GamePlayerCatalog? _catalog;
   PreparedGamePlayback? _preparedPlayback;
   String? _preparedInputKey;
   String? _contextKey;
@@ -128,7 +129,7 @@ class GamePlayerController extends Notifier<GamePlayerSnapshot> {
         }
       }
       _setPlaybackFailure('操作已超时，未执行自动点击。');
-      return state.toMap();
+      return state.toOverlayActionMap();
     }
     switch (action['type']) {
       case 'togglePlayback':
@@ -245,7 +246,7 @@ class GamePlayerController extends Notifier<GamePlayerSnapshot> {
     }
     _publish();
     unawaited(_persist());
-    return state.toMap();
+    return state.toOverlayActionMap();
   }
 
   Future<void> _selectTarget(Map<String, Object?> action) async {
@@ -559,6 +560,8 @@ class GamePlayerController extends Notifier<GamePlayerSnapshot> {
   }
 
   MusicFile? _libraryFile(String fileName) {
+    final cached = _catalog?.filesByName[fileName];
+    if (cached != null) return cached;
     final files = ref.read(musicLibraryProvider).value?.files;
     if (files == null) return null;
     for (final file in files) {
@@ -751,24 +754,13 @@ class GamePlayerController extends Notifier<GamePlayerSnapshot> {
     MusicFile? selectedFile, {
     String? profileLabel,
   }) {
-    final files = library?.files ?? <MusicFile>[?selectedFile];
-    final knownNames = files.map((file) => file.fileName).toSet();
-    final playlists = <GamePlayerPlaylistSnapshot>[
-      GamePlayerPlaylistSnapshot(
-        id: allSongsPlaylistId,
-        name: '所有曲目',
-        fileNames: files.map((file) => file.fileName).toList(growable: false),
-      ),
-      for (final playlist in library?.playlists ?? const [])
-        if (!playlist.isBuiltinFavorite)
-          GamePlayerPlaylistSnapshot(
-            id: playlist.id,
-            name: playlist.name,
-            fileNames: playlist.musicFileNames
-                .where(knownNames.contains)
-                .toList(growable: false),
-          ),
-    ];
+    var catalog = _catalog;
+    if (catalog == null || !catalog.matches(library, selectedFile)) {
+      catalog = _GamePlayerCatalog(library, selectedFile, catalog);
+      _catalog = catalog;
+    }
+    final knownNames = catalog.knownNames;
+    final playlists = catalog.playlists;
     if (!playlists.any((item) => item.id == _queuePlaylistId)) {
       final librarySelection = library?.currentPlaylistId;
       _queuePlaylistId = playlists.any((item) => item.id == librarySelection)
@@ -781,7 +773,7 @@ class GamePlayerController extends Notifier<GamePlayerSnapshot> {
     if (!knownNames.contains(_currentFileName)) {
       _currentFileName = knownNames.contains(selectedFile?.fileName)
           ? selectedFile!.fileName
-          : queue.firstOrNull ?? files.firstOrNull?.fileName;
+          : queue.firstOrNull ?? catalog.files.firstOrNull?.fileName;
       _positionMs = 0;
       _invalidatePreparedPlan(clearDuration: true);
     }
@@ -789,32 +781,20 @@ class GamePlayerController extends Notifier<GamePlayerSnapshot> {
         .where(knownNames.contains)
         .toList(growable: true);
     if (_currentFileName case final current?) _remember(current);
-    final current = files.where((file) => file.fileName == _currentFileName);
-    final rawDurationMs = current.firstOrNull?.durationMs ?? 0;
+    final rawDurationMs =
+        catalog.filesByName[_currentFileName]?.durationMs ?? 0;
     final durationMs = _planDurationMs ?? rawDurationMs;
     _positionMs = _positionMs.clamp(0, durationMs > 0 ? durationMs : 0);
 
     return GamePlayerSnapshot(
-      tracks: files
-          .map(
-            (file) => GamePlayerTrack(
-              fileName: file.fileName,
-              path: file.path,
-              formatId: file.formatId,
-              durationMs: file.durationMs,
-            ),
-          )
-          .toList(growable: false),
+      tracks: catalog.tracks,
       playlists: playlists,
       queuePlaylistId: _queuePlaylistId,
-      queueFileNames: List<String>.of(queue),
-      favoriteFileNames:
-          library?.favoritePlaylist.musicFileNames
-              .where(knownNames.contains)
-              .toList(growable: false) ??
-          const <String>[],
+      queueFileNames: queue,
+      favoriteFileNames: catalog.favoriteFileNames,
       historyFileNames: List<String>.of(_historyFileNames),
       currentFileName: _currentFileName,
+      currentTrackIndex: catalog.trackIndexes[_currentFileName] ?? -1,
       positionMs: _positionMs,
       isPlaying: _isPlaying,
       speed: _speed,
@@ -885,5 +865,128 @@ class GamePlayerController extends Notifier<GamePlayerSnapshot> {
         'durationMode': _durationMode.name,
       }),
     );
+  }
+}
+
+class _GamePlayerCatalog {
+  _GamePlayerCatalog(
+    MusicLibraryState? library,
+    MusicFile? selectedFile,
+    _GamePlayerCatalog? previous,
+  ) : _sourceFiles = library?.files,
+      _sourcePlaylists = library?.playlists,
+      _fallbackFile = library == null ? selectedFile : null {
+    final canReuseTracks =
+        previous != null &&
+        identical(previous._sourceFiles, _sourceFiles) &&
+        identical(previous._fallbackFile, _fallbackFile);
+    if (canReuseTracks) {
+      files = previous.files;
+      filesByName = previous.filesByName;
+      knownNames = previous.knownNames;
+      tracks = previous.tracks;
+      trackIndexes = previous.trackIndexes;
+      allFileNames = previous.allFileNames;
+    } else {
+      files = List<MusicFile>.unmodifiable(
+        library?.files ?? <MusicFile>[?selectedFile],
+      );
+      filesByName = Map<String, MusicFile>.unmodifiable(<String, MusicFile>{
+        for (final file in files) file.fileName: file,
+      });
+      knownNames = Set<String>.unmodifiable(filesByName.keys);
+      tracks = List<GamePlayerTrack>.unmodifiable(
+        files.map(
+          (file) => GamePlayerTrack(
+            fileName: file.fileName,
+            path: file.path,
+            formatId: file.formatId,
+            durationMs: file.durationMs,
+          ),
+        ),
+      );
+      trackIndexes = Map<String, int>.unmodifiable(<String, int>{
+        for (var index = 0; index < tracks.length; index++)
+          tracks[index].fileName: index,
+      });
+      allFileNames = List<String>.unmodifiable(
+        files.map((file) => file.fileName),
+      );
+    }
+
+    _sourceVisiblePlaylists = <Object>[
+      for (final playlist in library?.playlists ?? const [])
+        if (!playlist.isBuiltinFavorite) playlist,
+    ];
+    if (canReuseTracks &&
+        previous != null &&
+        _sameObjects(
+          previous._sourceVisiblePlaylists,
+          _sourceVisiblePlaylists,
+        )) {
+      playlists = previous.playlists;
+    } else {
+      playlists = List<GamePlayerPlaylistSnapshot>.unmodifiable(
+        <GamePlayerPlaylistSnapshot>[
+          GamePlayerPlaylistSnapshot(
+            id: allSongsPlaylistId,
+            name: '所有曲目',
+            fileNames: allFileNames,
+          ),
+          for (final playlist in library?.playlists ?? const [])
+            if (!playlist.isBuiltinFavorite)
+              GamePlayerPlaylistSnapshot(
+                id: playlist.id,
+                name: playlist.name,
+                fileNames: List<String>.unmodifiable(
+                  playlist.musicFileNames.where(knownNames.contains),
+                ),
+              ),
+        ],
+      );
+    }
+
+    favoriteFileNames =
+        previous != null &&
+            identical(previous._sourcePlaylists, _sourcePlaylists)
+        ? previous.favoriteFileNames
+        : List<String>.unmodifiable(
+            library?.playlists
+                    .where((playlist) => playlist.isBuiltinFavorite)
+                    .expand((playlist) => playlist.musicFileNames)
+                    .where(knownNames.contains) ??
+                const <String>[],
+          );
+  }
+
+  final Object? _sourceFiles;
+  final Object? _sourcePlaylists;
+  final MusicFile? _fallbackFile;
+  late final List<Object> _sourceVisiblePlaylists;
+  late final List<MusicFile> files;
+  late final Map<String, MusicFile> filesByName;
+  late final Set<String> knownNames;
+  late final List<GamePlayerTrack> tracks;
+  late final Map<String, int> trackIndexes;
+  late final List<String> allFileNames;
+  late final List<GamePlayerPlaylistSnapshot> playlists;
+  late final List<String> favoriteFileNames;
+
+  bool matches(MusicLibraryState? library, MusicFile? selectedFile) {
+    if (library != null) {
+      return identical(_sourceFiles, library.files) &&
+          identical(_sourcePlaylists, library.playlists);
+    }
+    return _sourceFiles == null &&
+        _sourcePlaylists == null &&
+        identical(_fallbackFile, selectedFile);
+  }
+
+  static bool _sameObjects(List<Object> a, List<Object> b) {
+    if (a.length != b.length) return false;
+    for (var index = 0; index < a.length; index++) {
+      if (!identical(a[index], b[index])) return false;
+    }
+    return true;
   }
 }

@@ -162,16 +162,25 @@ internal class PlayerOverlayHost(
     fun snapshotSession(): Map<String, Any?> = HashMap(session)
 
     fun updateSession(arguments: Map<String, Any?>) {
-        session = parseSession(arguments)
+        val isPartial = arguments["partial"] == true
+        session = if (isPartial) {
+            parseSession(session + (arguments - "partial"))
+        } else {
+            parseSession(arguments)
+        }
         if (isVisible()) {
-            controlChannel?.invokeMethod("updateSession", session)
+            controlChannel?.invokeMethod(
+                "updateSession",
+                if (isPartial) arguments else session,
+            )
         }
     }
 
     fun updateFromPlaybackEvent(event: Map<String, Any?>) {
         val type = event["type"] as? String ?: return
         if (type !in TERMINAL_PLAYBACK_EVENTS) return
-        session = session + buildMap<String, Any?> {
+        val update = buildMap<String, Any?> {
+            put("partial", true)
             put("isPlaying", false)
             put("playbackStatus", type)
             (event["positionMs"] as? Number)?.toLong()?.let {
@@ -181,8 +190,9 @@ internal class PlayerOverlayHost(
                 put("playbackError", event["message"] as? String ?: "自动演奏已停止。")
             }
         }
+        session = parseSession(session + (update - "partial"))
         if (isVisible()) {
-            controlChannel?.invokeMethod("updateSession", session)
+            controlChannel?.invokeMethod("updateSession", update)
         }
     }
 
@@ -323,7 +333,7 @@ internal class PlayerOverlayHost(
 
     /**
      * Applies the native safety boundary before asking the primary Flutter
-     * engine to update library/player state. The returned snapshot is only used
+     * engine to update library/player state. The returned patch is only used
      * when that engine is unavailable; it must never claim playback is still
      * active after native gesture scheduling has been stopped or paused.
      */
@@ -425,7 +435,8 @@ internal class PlayerOverlayHost(
         speed: Double? = null,
         extra: Map<String, Any?> = emptyMap(),
     ): Map<String, Any?> {
-        session = session + buildMap<String, Any?> {
+        val update = buildMap<String, Any?> {
+            put("partial", true)
             put("isPlaying", isPlaying)
             if (positionMs != null) put("positionMs", positionMs)
             if (speed != null) put("speed", speed)
@@ -433,7 +444,8 @@ internal class PlayerOverlayHost(
                 if (value != null) put(key, value)
             }
         }
-        return session
+        session = parseSession(session + (update - "partial"))
+        return update
     }
 
     private fun resize(

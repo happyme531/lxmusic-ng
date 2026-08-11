@@ -74,6 +74,7 @@ class GamePlayerSnapshot {
     required this.favoriteFileNames,
     required this.historyFileNames,
     required this.currentFileName,
+    this.currentTrackIndex = -1,
     required this.positionMs,
     required this.isPlaying,
     required this.speed,
@@ -97,6 +98,7 @@ class GamePlayerSnapshot {
       favoriteFileNames = const <String>[],
       historyFileNames = const <String>[],
       currentFileName = null,
+      currentTrackIndex = -1,
       positionMs = 0,
       isPlaying = false,
       speed = 1,
@@ -118,6 +120,7 @@ class GamePlayerSnapshot {
   final List<String> favoriteFileNames;
   final List<String> historyFileNames;
   final String? currentFileName;
+  final int currentTrackIndex;
   final int positionMs;
   final bool isPlaying;
   final double speed;
@@ -138,6 +141,10 @@ class GamePlayerSnapshot {
 
   GamePlayerTrack? trackByFileName(String? fileName) {
     if (fileName == null) return null;
+    if (currentTrackIndex >= 0 && currentTrackIndex < tracks.length) {
+      final indexed = tracks[currentTrackIndex];
+      if (indexed.fileName == fileName) return indexed;
+    }
     for (final track in tracks) {
       if (track.fileName == fileName) return track;
     }
@@ -164,6 +171,7 @@ class GamePlayerSnapshot {
       'favoriteFileNames': favoriteFileNames,
       'historyFileNames': historyFileNames,
       'currentFileName': currentFileName,
+      'currentTrackIndex': currentTrackIndex,
       'title': track?.displayName ?? '暂无曲目',
       'durationMs': durationMs > 0 ? durationMs : 1,
       'positionMs': positionMs,
@@ -176,10 +184,65 @@ class GamePlayerSnapshot {
       'timingOffsetMs': timingOffsetMs,
       'touchDurationPercent': touchDurationPercent,
       'durationMode': durationMode.name,
-      if (profileLabel != null) 'profileLabel': profileLabel,
-      if (playbackDurationMs != null) 'playbackDurationMs': playbackDurationMs,
+      'profileLabel': profileLabel,
+      'playbackDurationMs': playbackDurationMs,
       if (playbackError != null) 'playbackError': playbackError,
     };
+  }
+
+  /// Builds a small session update while preserving the collection data that
+  /// the native overlay host already owns. Large collections are included only
+  /// when their cached instances actually change.
+  Map<String, Object?> toOverlayUpdateMap(GamePlayerSnapshot? previous) {
+    if (previous == null) return toMap();
+    final track = currentTrack;
+    return <String, Object?>{
+      'partial': true,
+      'currentFileName': currentFileName,
+      'currentTrackIndex': currentTrackIndex,
+      'title': track?.displayName ?? '暂无曲目',
+      'durationMs': durationMs > 0 ? durationMs : 1,
+      'positionMs': positionMs,
+      'isPlaying': isPlaying,
+      'speed': speed,
+      'playbackModeIndex': playbackModeIndex,
+      'playbackStatus': playbackStatus,
+      'playbackError': playbackError,
+      'revision': revision,
+      'transpose': transpose,
+      'timingOffsetMs': timingOffsetMs,
+      'touchDurationPercent': touchDurationPercent,
+      'durationMode': durationMode.name,
+      'profileLabel': profileLabel,
+      'playbackDurationMs': playbackDurationMs,
+      if (!identical(tracks, previous.tracks))
+        'tracks': tracks.map((item) => item.toMap()).toList(growable: false),
+      if (!identical(playlists, previous.playlists))
+        'playlists': playlists
+            .map((item) => item.toMap())
+            .toList(growable: false),
+      if (queuePlaylistId != previous.queuePlaylistId)
+        'queuePlaylistId': queuePlaylistId,
+      if (!identical(queueFileNames, previous.queueFileNames))
+        'queueFileNames': queueFileNames,
+      if (!identical(favoriteFileNames, previous.favoriteFileNames))
+        'favoriteFileNames': favoriteFileNames,
+      if (!_sameStrings(historyFileNames, previous.historyFileNames))
+        'historyFileNames': historyFileNames,
+    };
+  }
+
+  /// Response payload for an overlay action. The regular host update will
+  /// synchronize collection changes separately.
+  Map<String, Object?> toOverlayActionMap() => toOverlayUpdateMap(this);
+
+  static bool _sameStrings(List<String> a, List<String> b) {
+    if (identical(a, b)) return true;
+    if (a.length != b.length) return false;
+    for (var index = 0; index < a.length; index++) {
+      if (a[index] != b[index]) return false;
+    }
+    return true;
   }
 
   factory GamePlayerSnapshot.fromMap(Map<String, Object?> map) {
@@ -211,6 +274,7 @@ class GamePlayerSnapshot {
           .whereType<String>()
           .toList(growable: false),
       currentFileName: map['currentFileName'] as String?,
+      currentTrackIndex: (map['currentTrackIndex'] as num?)?.toInt() ?? -1,
       positionMs: (map['positionMs'] as num?)?.toInt() ?? 0,
       isPlaying: map['isPlaying'] == true,
       speed: ((map['speed'] as num?)?.toDouble() ?? 1).clamp(0.5, 2),
@@ -249,6 +313,7 @@ class GamePlayerSnapshot {
     List<String>? favoriteFileNames,
     List<String>? historyFileNames,
     String? currentFileName,
+    int? currentTrackIndex,
     int? positionMs,
     bool? isPlaying,
     double? speed,
@@ -271,6 +336,7 @@ class GamePlayerSnapshot {
       favoriteFileNames: favoriteFileNames ?? this.favoriteFileNames,
       historyFileNames: historyFileNames ?? this.historyFileNames,
       currentFileName: currentFileName ?? this.currentFileName,
+      currentTrackIndex: currentTrackIndex ?? this.currentTrackIndex,
       positionMs: positionMs ?? this.positionMs,
       isPlaying: isPlaying ?? this.isPlaying,
       speed: speed ?? this.speed,

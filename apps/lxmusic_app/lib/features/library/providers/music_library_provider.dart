@@ -98,33 +98,13 @@ final currentPlaylistViewProvider = Provider<LibraryPlaylistView>((ref) {
 final filteredMusicFilesProvider = Provider<AsyncValue<List<MusicFile>>>((ref) {
   final query = ref.watch(searchQueryProvider).trim().toLowerCase();
   return ref.watch(musicLibraryProvider).whenData((library) {
-    final currentPlaylist = library.currentPlaylist;
-    var result = library.files;
-    if (currentPlaylist != null) {
-      final names = currentPlaylist.musicFileNames.toSet();
-      result = result.where((file) => names.contains(file.fileName)).toList();
-    }
-    if (query.isNotEmpty) {
-      result = result
-          .where((file) => file.fileName.toLowerCase().contains(query))
-          .toList();
-    }
-    final favoriteNames = library.favoritePlaylist.musicFileNames.toSet();
-    final sorted = result.toList()
-      ..sort((a, b) => _compareMusicFiles(favoriteNames, a, b));
-    return sorted;
+    final playlistFiles = library.filesForPlaylist(library.currentPlaylistId);
+    if (query.isEmpty) return playlistFiles;
+    return playlistFiles
+        .where((file) => file.normalizedFileName.contains(query))
+        .toList(growable: false);
   });
 });
-
-int _compareMusicFiles(Set<String> favoriteNames, MusicFile a, MusicFile b) {
-  final favoriteOrder = (favoriteNames.contains(b.fileName) ? 1 : 0).compareTo(
-    favoriteNames.contains(a.fileName) ? 1 : 0,
-  );
-  if (favoriteOrder != 0) {
-    return favoriteOrder;
-  }
-  return a.fileName.toLowerCase().compareTo(b.fileName.toLowerCase());
-}
 
 class MusicLibraryNotifier extends AsyncNotifier<MusicLibraryState> {
   @override
@@ -304,7 +284,7 @@ class MusicLibraryNotifier extends AsyncNotifier<MusicLibraryState> {
     final detector = ref.read(scoreFormatDetectorProvider);
     final fileStore = ref.read(fileStoreProvider);
     final archiveImporter = ref.read(archiveImportServiceProvider);
-    final current = state.value ?? const MusicLibraryState.empty();
+    final current = state.value ?? MusicLibraryState.empty();
     final filesByName = <String, MusicFile>{
       for (final file in current.files) file.fileName: file,
     };
@@ -939,27 +919,36 @@ class MusicLibraryNotifier extends AsyncNotifier<MusicLibraryState> {
 }
 
 class MusicLibraryState {
-  const MusicLibraryState({
+  MusicLibraryState({
     required this.files,
     required this.playlists,
     required this.currentPlaylistId,
-  });
+  }) : _index = _MusicLibraryIndex(files, playlists);
 
-  const MusicLibraryState.empty()
-    : files = const <MusicFile>[],
-      playlists = const <LibraryPlaylist>[
-        LibraryPlaylist(
-          id: favoritesPlaylistId,
-          name: '收藏',
-          musicFileNames: <String>[],
-          isBuiltinFavorite: true,
-        ),
-      ],
-      currentPlaylistId = allSongsPlaylistId;
+  factory MusicLibraryState.empty() => MusicLibraryState(
+    files: const <MusicFile>[],
+    playlists: const <LibraryPlaylist>[
+      LibraryPlaylist(
+        id: favoritesPlaylistId,
+        name: '收藏',
+        musicFileNames: <String>[],
+        isBuiltinFavorite: true,
+      ),
+    ],
+    currentPlaylistId: allSongsPlaylistId,
+  );
+
+  MusicLibraryState._({
+    required this.files,
+    required this.playlists,
+    required this.currentPlaylistId,
+    required _MusicLibraryIndex index,
+  }) : _index = index;
 
   final List<MusicFile> files;
   final List<LibraryPlaylist> playlists;
   final String currentPlaylistId;
+  final _MusicLibraryIndex _index;
 
   LibraryPlaylist get favoritePlaylist =>
       playlists.firstWhere((playlist) => playlist.id == favoritesPlaylistId);
@@ -974,16 +963,76 @@ class MusicLibraryState {
 
   bool isFavorite(String fileName) => favoritePlaylist.contains(fileName);
 
+  List<MusicFile> filesForPlaylist(String playlistId) =>
+      _index.filesForPlaylist(playlistId);
+
   MusicLibraryState copyWith({
     List<MusicFile>? files,
     List<LibraryPlaylist>? playlists,
     String? currentPlaylistId,
   }) {
-    return MusicLibraryState(
-      files: files ?? this.files,
-      playlists: playlists ?? this.playlists,
+    final nextFiles = files ?? this.files;
+    final nextPlaylists = playlists ?? this.playlists;
+    return MusicLibraryState._(
+      files: nextFiles,
+      playlists: nextPlaylists,
       currentPlaylistId: currentPlaylistId ?? this.currentPlaylistId,
+      index:
+          identical(nextFiles, this.files) &&
+              identical(nextPlaylists, this.playlists)
+          ? _index
+          : _MusicLibraryIndex(nextFiles, nextPlaylists),
     );
+  }
+}
+
+class _MusicLibraryIndex {
+  _MusicLibraryIndex(this.files, this.playlists);
+
+  static const _maxCachedPlaylistViews = 8;
+
+  final List<MusicFile> files;
+  final List<LibraryPlaylist> playlists;
+  final Map<String, List<MusicFile>> _playlistFiles =
+      <String, List<MusicFile>>{};
+
+  late final Set<String> _favoriteNames = playlists
+      .where((playlist) => playlist.id == favoritesPlaylistId)
+      .expand((playlist) => playlist.musicFileNames)
+      .toSet();
+
+  late final List<MusicFile> _sortedFiles = List<MusicFile>.unmodifiable(
+    List<MusicFile>.of(files)..sort(_compareMusicFiles),
+  );
+
+  int _compareMusicFiles(MusicFile a, MusicFile b) {
+    final favoriteOrder = (_favoriteNames.contains(b.fileName) ? 1 : 0)
+        .compareTo(_favoriteNames.contains(a.fileName) ? 1 : 0);
+    if (favoriteOrder != 0) return favoriteOrder;
+    return a.normalizedFileName.compareTo(b.normalizedFileName);
+  }
+
+  List<MusicFile> filesForPlaylist(String playlistId) {
+    if (playlistId == allSongsPlaylistId) return _sortedFiles;
+    final cached = _playlistFiles.remove(playlistId);
+    if (cached != null) {
+      _playlistFiles[playlistId] = cached;
+      return cached;
+    }
+    final playlist = playlists
+        .where((playlist) => playlist.id == playlistId)
+        .firstOrNull;
+    final names = playlist?.musicFileNames.toSet();
+    final result = names == null || names.isEmpty
+        ? const <MusicFile>[]
+        : List<MusicFile>.unmodifiable(
+            _sortedFiles.where((file) => names.contains(file.fileName)),
+          );
+    if (_playlistFiles.length >= _maxCachedPlaylistViews) {
+      _playlistFiles.remove(_playlistFiles.keys.first);
+    }
+    _playlistFiles[playlistId] = result;
+    return result;
   }
 }
 
