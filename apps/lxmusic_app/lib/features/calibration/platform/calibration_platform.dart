@@ -54,6 +54,23 @@ class CalibrationPlatformState {
       activeSessionId: map['activeSessionId'] as String?,
     );
   }
+
+  Map<String, Object?> toMap() => <String, Object?>{
+    'supported': supported,
+    'accessibilityEnabled': accessibilityEnabled,
+    'apiLevel': apiLevel,
+    'deviceId': deviceId,
+    'deviceDisplayName': deviceDisplayName,
+    'viewportWidthPx': viewportWidthPx,
+    'viewportHeightPx': viewportHeightPx,
+    'density': density,
+    'displayRotation': displayRotation,
+    'orientationLockSupported': orientationLockSupported,
+    if (targetOrientation != null) 'targetOrientation': targetOrientation,
+    if (targetProfileId != null) 'targetProfileId': targetProfileId,
+    if (targetLayoutId != null) 'targetLayoutId': targetLayoutId,
+    if (activeSessionId != null) 'activeSessionId': activeSessionId,
+  };
 }
 
 class LaunchableCalibrationTarget {
@@ -71,6 +88,11 @@ class LaunchableCalibrationTarget {
       label: map['label'] as String? ?? map['packageName'] as String? ?? '',
     );
   }
+
+  Map<String, Object?> toMap() => <String, Object?>{
+    'packageName': packageName,
+    'label': label,
+  };
 }
 
 enum CalibrationSessionStatus { started, saved, cancelled, error }
@@ -112,6 +134,14 @@ class CalibrationSessionResult {
       message: map['message'] as String?,
     );
   }
+
+  Map<String, Object?> toMap() => <String, Object?>{
+    'status': status.name,
+    if (sessionId != null) 'sessionId': sessionId,
+    if (calibration != null) 'calibration': calibration!.toJson(),
+    if (errorCode != null) 'errorCode': errorCode,
+    if (message != null) 'message': message,
+  };
 }
 
 class CalibrationSessionRequest {
@@ -123,6 +153,7 @@ class CalibrationSessionRequest {
     required this.layoutDisplayName,
     required this.packageNameHints,
     required this.keys,
+    this.launchOrigin = CalibrationLaunchOrigin.mainApp,
     this.targetPackageName,
     this.previousCalibration,
   });
@@ -134,6 +165,7 @@ class CalibrationSessionRequest {
   final String layoutDisplayName;
   final List<String> packageNameHints;
   final List<KeyDefinition> keys;
+  final CalibrationLaunchOrigin launchOrigin;
   final String? targetPackageName;
   final Calibration? previousCalibration;
 
@@ -145,6 +177,7 @@ class CalibrationSessionRequest {
       'profileDisplayName': profileDisplayName,
       'layoutDisplayName': layoutDisplayName,
       'packageNameHints': packageNameHints,
+      'launchOrigin': launchOrigin.name,
       'keys': <Map<String, Object?>>[
         for (final key in keys)
           <String, Object?>{
@@ -159,6 +192,8 @@ class CalibrationSessionRequest {
     };
   }
 }
+
+enum CalibrationLaunchOrigin { mainApp, playerOverlay }
 
 abstract class CalibrationPlatform {
   Future<CalibrationPlatformState> getState();

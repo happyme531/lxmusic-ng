@@ -11,8 +11,14 @@ import '../../calibration/calibration_launcher.dart';
 import '../../calibration/platform/calibration_platform.dart';
 import '../../calibration/providers/calibration_provider.dart';
 import '../../layout_preview/layout_preview_route.dart';
-import '../../library/models/music_file.dart';
 import '../providers/workbench_provider.dart';
+
+typedef CurrentTargetSelectionCallback =
+    Future<void> Function(
+      GameProfile profile,
+      InstrumentVariant variant,
+      KeyLayout layout,
+    );
 
 class CurrentTargetAction extends ConsumerStatefulWidget {
   const CurrentTargetAction({super.key});
@@ -77,7 +83,6 @@ class _CurrentTargetActionState extends ConsumerState<CurrentTargetAction>
     final profile = ref.watch(selectedProfileProvider);
     final variant = ref.watch(selectedVariantProvider);
     final layout = ref.watch(selectedLayoutProvider);
-    final selectedFile = ref.watch(selectedFileProvider);
     final label = _actionLabel(profile, variant, layout);
     final calibrationStatus =
         _supportsAndroidCalibration && profile != null && layout != null
@@ -148,11 +153,10 @@ class _CurrentTargetActionState extends ConsumerState<CurrentTargetAction>
               showDragHandle: true,
               isScrollControlled: true,
               builder: (sheetContext) {
-                return _CurrentTargetPickerSheet(
+                return CurrentTargetPickerSheet(
                   initialProfile: profile,
                   initialVariant: variant,
                   initialLayout: layout,
-                  selectedFile: selectedFile,
                 );
               },
             );
@@ -184,26 +188,33 @@ String _actionLabel(
 
 enum _PickerStage { profile, variant, layout }
 
-class _CurrentTargetPickerSheet extends ConsumerStatefulWidget {
-  const _CurrentTargetPickerSheet({
+class CurrentTargetPickerSheet extends ConsumerStatefulWidget {
+  const CurrentTargetPickerSheet({
     required this.initialProfile,
     required this.initialVariant,
     required this.initialLayout,
-    required this.selectedFile,
+    this.onSelected,
+    this.onDismiss,
+    this.allowLayoutPreview = true,
+    this.compact = false,
+    super.key,
   });
 
   final GameProfile? initialProfile;
   final InstrumentVariant? initialVariant;
   final KeyLayout? initialLayout;
-  final MusicFile? selectedFile;
+  final CurrentTargetSelectionCallback? onSelected;
+  final VoidCallback? onDismiss;
+  final bool allowLayoutPreview;
+  final bool compact;
 
   @override
-  ConsumerState<_CurrentTargetPickerSheet> createState() =>
+  ConsumerState<CurrentTargetPickerSheet> createState() =>
       _CurrentTargetPickerSheetState();
 }
 
 class _CurrentTargetPickerSheetState
-    extends ConsumerState<_CurrentTargetPickerSheet> {
+    extends ConsumerState<CurrentTargetPickerSheet> {
   late _PickerStage _stage;
   late final GameProfile? _committedProfile;
   late final InstrumentVariant? _committedVariant;
@@ -213,6 +224,7 @@ class _CurrentTargetPickerSheetState
   KeyLayout? _layout;
   String _filterQuery = '';
   bool _startingCalibration = false;
+  bool _committingSelection = false;
 
   @override
   void initState() {
@@ -246,121 +258,154 @@ class _CurrentTargetPickerSheetState
           ),
     };
 
-    return SafeArea(
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
-        child: AnimatedSize(
-          duration: const Duration(milliseconds: 180),
-          curve: Curves.easeOutCubic,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.center,
-                children: [
-                  Text(
-                    '当前配置',
-                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.w600,
+    final picker = Padding(
+      padding: widget.compact
+          ? const EdgeInsets.fromLTRB(12, 4, 12, 12)
+          : const EdgeInsets.fromLTRB(20, 8, 20, 24),
+      child: AnimatedSize(
+        duration: const Duration(milliseconds: 180),
+        curve: Curves.easeOutCubic,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                Text(
+                  '当前配置',
+                  style:
+                      (widget.compact
+                              ? Theme.of(context).textTheme.titleSmall
+                              : Theme.of(context).textTheme.titleMedium)
+                          ?.copyWith(fontWeight: FontWeight.w600),
+                ),
+                SizedBox(width: widget.compact ? 8 : 12),
+                Expanded(
+                  child: Text(
+                    _targetSummary(
+                      _committedProfile,
+                      _committedVariant,
+                      _committedLayout,
+                      emptyText: '还没有生效配置',
                     ),
+                    maxLines: widget.compact ? 1 : 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color:
+                          _committedProfile != null &&
+                              _committedVariant != null &&
+                              _committedLayout != null
+                          ? Theme.of(context).colorScheme.onSurface
+                          : Theme.of(context).colorScheme.outline,
+                      fontWeight: FontWeight.w500,
+                    ),
+                    textAlign: TextAlign.end,
                   ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Text(
-                      _targetSummary(
-                        _committedProfile,
-                        _committedVariant,
-                        _committedLayout,
-                        emptyText: '还没有生效配置',
-                      ),
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        color:
-                            _committedProfile != null &&
-                                _committedVariant != null &&
-                                _committedLayout != null
-                            ? Theme.of(context).colorScheme.onSurface
-                            : Theme.of(context).colorScheme.outline,
-                        fontWeight: FontWeight.w500,
-                      ),
-                      textAlign: TextAlign.end,
-                    ),
-                  ),
-                  if (_supportsAndroidCalibration &&
-                      _committedProfile != null &&
-                      _committedLayout != null) ...[
-                    const SizedBox(width: 8),
-                    _buildCalibrationAction(
-                      context,
-                      committedCalibrationStatus,
-                    ),
-                  ],
+                ),
+                if (_supportsAndroidCalibration &&
+                    _committedProfile != null &&
+                    _committedLayout != null) ...[
+                  SizedBox(width: widget.compact ? 4 : 8),
+                  _buildCalibrationAction(context, committedCalibrationStatus),
                 ],
-              ),
-              const SizedBox(height: 12),
-              _buildStageHeader(context),
-              const SizedBox(height: 8),
-              TextField(
-                key: ValueKey('target-filter-${_stage.name}'),
-                decoration: InputDecoration(
-                  hintText: switch (_stage) {
-                    _PickerStage.profile => '筛选游戏名',
-                    _PickerStage.variant => '筛选乐器名',
-                    _PickerStage.layout => '筛选键位名',
-                  },
-                  prefixIcon: const Icon(Icons.search),
-                  isDense: true,
-                  border: const OutlineInputBorder(),
-                ),
-                onChanged: (value) {
-                  setState(() {
-                    _filterQuery = value.trim();
-                  });
-                },
-              ),
-              const SizedBox(height: 12),
-              Flexible(
-                child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxHeight: 360),
-                  child: AnimatedSwitcher(
-                    duration: const Duration(milliseconds: 180),
-                    child: switch (_stage) {
-                      _PickerStage.profile => _ProfileList(
-                        key: const ValueKey('profile-list'),
-                        profiles: filteredProfiles,
-                        selectedProfileId: _profile?.id,
-                        onSelected: _handleProfileSelected,
-                      ),
-                      _PickerStage.variant => _VariantList(
-                        key: const ValueKey('variant-list'),
-                        variants: filteredVariants,
-                        selectedVariantId: _variant?.id,
-                        onSelected: _handleVariantSelected,
-                      ),
-                      _PickerStage.layout => _LayoutList(
-                        key: const ValueKey('layout-list'),
-                        layouts: filteredLayouts,
-                        selectedLayoutId: _layout?.id,
-                        calibrationStatuses: layoutCalibrationStatuses,
-                        onPreview: _profile == null
-                            ? null
-                            : (layoutId) => _openLayoutPreview(
-                                context,
-                                profile: _profile!,
-                                layoutId: layoutId,
-                              ),
-                        onSelected: _handleLayoutSelected,
-                      ),
-                    },
+                if (widget.onDismiss != null) ...[
+                  const SizedBox(width: 4),
+                  IconButton(
+                    key: const ValueKey('close-current-target-picker'),
+                    tooltip: '关闭键位选择',
+                    visualDensity: VisualDensity.compact,
+                    constraints: widget.compact
+                        ? const BoxConstraints.tightFor(width: 36, height: 36)
+                        : null,
+                    onPressed: _dismiss,
+                    icon: const Icon(Icons.close_rounded),
                   ),
+                ],
+              ],
+            ),
+            SizedBox(height: widget.compact ? 6 : 12),
+            _buildStageHeader(context),
+            SizedBox(height: widget.compact ? 4 : 8),
+            TextField(
+              key: ValueKey('target-filter-${_stage.name}'),
+              decoration: InputDecoration(
+                hintText: switch (_stage) {
+                  _PickerStage.profile => '筛选游戏名',
+                  _PickerStage.variant => '筛选乐器名',
+                  _PickerStage.layout => '筛选键位名',
+                },
+                prefixIcon: const Icon(Icons.search),
+                prefixIconConstraints: widget.compact
+                    ? const BoxConstraints.tightFor(width: 40, height: 40)
+                    : null,
+                contentPadding: widget.compact
+                    ? const EdgeInsets.symmetric(horizontal: 10, vertical: 9)
+                    : null,
+                isDense: true,
+                border: const OutlineInputBorder(),
+              ),
+              onChanged: (value) {
+                setState(() {
+                  _filterQuery = value.trim();
+                });
+              },
+            ),
+            SizedBox(height: widget.compact ? 6 : 12),
+            Flexible(
+              child: ConstrainedBox(
+                constraints: BoxConstraints(
+                  maxHeight: widget.compact ? 190 : 360,
+                ),
+                child: AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 180),
+                  child: switch (_stage) {
+                    _PickerStage.profile => _ProfileList(
+                      key: const ValueKey('profile-list'),
+                      profiles: filteredProfiles,
+                      selectedProfileId: _profile?.id,
+                      onSelected: _handleProfileSelected,
+                    ),
+                    _PickerStage.variant => _VariantList(
+                      key: const ValueKey('variant-list'),
+                      variants: filteredVariants,
+                      selectedVariantId: _variant?.id,
+                      onSelected: _handleVariantSelected,
+                    ),
+                    _PickerStage.layout => _LayoutList(
+                      key: const ValueKey('layout-list'),
+                      layouts: filteredLayouts,
+                      selectedLayoutId: _layout?.id,
+                      calibrationStatuses: layoutCalibrationStatuses,
+                      onPreview: _profile == null || !widget.allowLayoutPreview
+                          ? null
+                          : (layoutId) => _openLayoutPreview(
+                              context,
+                              profile: _profile!,
+                              layoutId: layoutId,
+                            ),
+                      onSelected: _handleLayoutSelected,
+                    ),
+                  },
                 ),
               ),
-            ],
-          ),
+            ),
+          ],
         ),
       ),
+    );
+    return SafeArea(
+      child: widget.compact
+          ? ListTileTheme.merge(
+              dense: true,
+              contentPadding: const EdgeInsets.symmetric(horizontal: 8),
+              horizontalTitleGap: 8,
+              minLeadingWidth: 28,
+              minVerticalPadding: 0,
+              visualDensity: const VisualDensity(vertical: -3),
+              child: picker,
+            )
+          : picker,
     );
   }
 
@@ -374,6 +419,12 @@ class _CurrentTargetPickerSheetState
           IconButton(
             icon: const Icon(Icons.arrow_back),
             tooltip: '返回上一级',
+            visualDensity: widget.compact
+                ? VisualDensity.compact
+                : VisualDensity.standard,
+            constraints: widget.compact
+                ? const BoxConstraints.tightFor(width: 40, height: 40)
+                : null,
             onPressed: () {
               _setStage(
                 switch (_stage) {
@@ -389,13 +440,14 @@ class _CurrentTargetPickerSheetState
             },
           )
         else
-          const SizedBox(width: 48),
+          SizedBox(width: widget.compact ? 40 : 48),
         Expanded(
           child: Padding(
             padding: const EdgeInsets.only(top: 4),
             child: Align(
               alignment: Alignment.topCenter,
               child: _SummaryRow(
+                compact: widget.compact,
                 profile: _profile,
                 variant: _variant,
                 layout: _layout,
@@ -415,7 +467,7 @@ class _CurrentTargetPickerSheetState
             ),
           ),
         ),
-        const SizedBox(width: 48),
+        SizedBox(width: widget.compact ? 40 : 48),
       ],
     );
   }
@@ -445,7 +497,8 @@ class _CurrentTargetPickerSheetState
       minimumSize: const WidgetStatePropertyAll(Size.zero),
       tapTargetSize: MaterialTapTargetSize.shrinkWrap,
     );
-    final onPressed = _startingCalibration || hasCalibration == null
+    final onPressed =
+        _startingCalibration || _committingSelection || hasCalibration == null
         ? null
         : _calibrateCurrentTarget;
 
@@ -459,7 +512,7 @@ class _CurrentTargetPickerSheetState
         ),
         onPressed: onPressed,
         icon: icon,
-        label: const Text('重新校准'),
+        label: Text(widget.compact ? '重校' : '重新校准'),
       );
     }
     return FilledButton.tonalIcon(
@@ -500,7 +553,7 @@ class _CurrentTargetPickerSheetState
       layout: layout,
     );
     if (mounted && result?.status == CalibrationSessionStatus.started) {
-      Navigator.of(context).pop();
+      _dismiss();
       return;
     }
     if (mounted) {
@@ -517,7 +570,8 @@ class _CurrentTargetPickerSheetState
     });
   }
 
-  void _handleLayoutSelected(String layoutId) {
+  Future<void> _handleLayoutSelected(String layoutId) async {
+    if (_committingSelection) return;
     final profile = _profile;
     final variant = _variant;
     if (profile == null || variant == null) {
@@ -532,15 +586,32 @@ class _CurrentTargetPickerSheetState
       return;
     }
 
-    ref.read(selectedProfileProvider.notifier).select(profile);
-    ref.read(selectedVariantProvider.notifier).select(variant);
-    ref.read(selectedLayoutProvider.notifier).select(layout);
-    markProfileUsedNow(ref, profile.id);
+    setState(() => _committingSelection = true);
+    try {
+      await widget.onSelected?.call(profile, variant, layout);
+      if (!mounted) return;
+      ref.read(selectedProfileProvider.notifier).select(profile);
+      ref.read(selectedVariantProvider.notifier).select(variant);
+      ref.read(selectedLayoutProvider.notifier).select(layout);
+      markProfileUsedNow(ref, profile.id);
+      setState(() => _layout = layout);
+      _dismiss();
+    } on Object catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('无法切换键位配置：$error')));
+      setState(() => _committingSelection = false);
+    }
+  }
 
-    setState(() {
-      _layout = layout;
-    });
-    Navigator.of(context).pop();
+  void _dismiss() {
+    final onDismiss = widget.onDismiss;
+    if (onDismiss != null) {
+      onDismiss();
+    } else {
+      Navigator.of(context).pop();
+    }
   }
 
   void _openLayoutPreview(
@@ -675,6 +746,7 @@ bool get _supportsAndroidCalibration =>
 
 class _SummaryRow extends StatelessWidget {
   const _SummaryRow({
+    required this.compact,
     required this.profile,
     required this.variant,
     required this.layout,
@@ -684,6 +756,7 @@ class _SummaryRow extends StatelessWidget {
     required this.onTapLayout,
   });
 
+  final bool compact;
   final GameProfile? profile;
   final InstrumentVariant? variant;
   final KeyLayout? layout;
@@ -695,25 +768,28 @@ class _SummaryRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Wrap(
-      spacing: 8,
-      runSpacing: 8,
+      spacing: compact ? 4 : 8,
+      runSpacing: compact ? 4 : 8,
       children: [
         _SummaryChip(
           chipKey: const ValueKey('target-summary-profile'),
           label: profile?.displayName ?? '选择游戏',
           selected: profile != null,
+          compact: compact,
           onTap: onTapProfile,
         ),
         _SummaryChip(
           chipKey: const ValueKey('target-summary-variant'),
           label: variant?.displayName ?? '选择乐器',
           selected: variant != null,
+          compact: compact,
           onTap: onTapVariant,
         ),
         _SummaryChip(
           chipKey: const ValueKey('target-summary-layout'),
           label: layout != null ? layoutLabel : '选择键位',
           selected: layout != null,
+          compact: compact,
           onTap: onTapLayout,
         ),
       ],
@@ -726,12 +802,14 @@ class _SummaryChip extends StatelessWidget {
     required this.chipKey,
     required this.label,
     required this.selected,
+    required this.compact,
     required this.onTap,
   });
 
   final Key chipKey;
   final String label;
   final bool selected;
+  final bool compact;
   final VoidCallback? onTap;
 
   @override
@@ -763,6 +841,10 @@ class _SummaryChip extends StatelessWidget {
           fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
         ),
       ),
+      visualDensity: compact ? VisualDensity.compact : VisualDensity.standard,
+      materialTapTargetSize: compact ? MaterialTapTargetSize.shrinkWrap : null,
+      padding: compact ? EdgeInsets.zero : null,
+      labelPadding: compact ? const EdgeInsets.symmetric(horizontal: 5) : null,
       backgroundColor: backgroundColor,
       side: BorderSide(
         color: selected

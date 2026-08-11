@@ -57,6 +57,7 @@ class CalibrationManager extends AsyncNotifier<CalibrationManagerState> {
     required GameProfile profile,
     required KeyLayout layout,
     String? targetPackageName,
+    CalibrationLaunchOrigin launchOrigin = CalibrationLaunchOrigin.mainApp,
   }) async {
     final platform = ref.read(calibrationPlatformProvider);
     final platformState = await platform.getState();
@@ -93,6 +94,7 @@ class CalibrationManager extends AsyncNotifier<CalibrationManagerState> {
         layoutDisplayName: layoutBinding?.displayName ?? layout.id,
         packageNameHints: profile.packageNameHints,
         keys: layout.keys,
+        launchOrigin: launchOrigin,
         targetPackageName: targetPackageName,
         previousCalibration: previous,
       ),

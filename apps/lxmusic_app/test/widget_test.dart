@@ -1,3 +1,4 @@
+import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:lxmusic_app/main.dart';
@@ -11,5 +12,9 @@ void main() {
     expect(find.text('工作台'), findsOneWidget);
     expect(find.text('预览'), findsOneWidget);
     expect(find.text('设置'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('player-overlay-launcher')),
+      findsOneWidget,
+    );
   });
 }

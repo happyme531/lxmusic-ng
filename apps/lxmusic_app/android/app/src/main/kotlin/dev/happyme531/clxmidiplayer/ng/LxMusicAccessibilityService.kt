@@ -34,13 +34,29 @@ class LxMusicAccessibilityService : AccessibilityService() {
     private var compactOverlay: View? = null
     private var compactOverlayParams: WindowManager.LayoutParams? = null
     private var calibrationOverlay: CalibrationOverlayView? = null
+    private var playerOverlayHost: PlayerOverlayHost? = null
+    private var playbackExecutor: AccessibilityPlaybackExecutor? = null
     private var session: CalibrationSession? = null
+    private var calibrationReturnTarget: CalibrationLaunchOrigin? = null
+    private var playerOverlaySessionToRestore: Map<String, Any?>? = null
     private var foregroundPackage: String? = null
+    private var serviceOrientation = Configuration.ORIENTATION_UNDEFINED
 
     override fun onServiceConnected() {
         super.onServiceConnected()
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         instance = this
+        playbackExecutor?.stop(notify = true)
+        playbackExecutor = AccessibilityPlaybackExecutor(
+            service = this,
+            foregroundPackage = { foregroundPackage },
+            overlayBounds = { playerOverlayHost?.currentBoundsPx() },
+            calibrationActive = { hasActiveCalibrationState() },
+        )
+        serviceOrientation = resources.configuration.orientation
+        foregroundPackage = null
+        playerOverlayHost?.hide()
+        playerOverlayHost = PlayerOverlayHost(this, windowManager)
         val active = session
         clearOverlays()
         if (active != null) {
@@ -50,24 +66,31 @@ class LxMusicAccessibilityService : AccessibilityService() {
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event?.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
-            val candidate = event.packageName?.toString()
-            if (candidate != null &&
-                candidate != packageName &&
-                candidate != "com.android.systemui"
-            ) {
+            val candidate = event.packageName
+                ?.toString()
+                ?.trim()
+                ?.takeIf(String::isNotEmpty)
+            if (candidate != null && candidate != packageName && candidate != "com.android.systemui") {
                 foregroundPackage = candidate
             }
         }
     }
 
     override fun onInterrupt() {
-        // Android calls this when accessibility feedback should stop. This
-        // service produces no spoken/haptic feedback, and app switching is a
-        // normal part of calibration, so the active overlay must stay alive.
+        playbackExecutor?.stop(notify = true)
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
+        val previousOrientation = serviceOrientation
+        serviceOrientation = newConfig.orientation
+        if (previousOrientation != Configuration.ORIENTATION_UNDEFINED &&
+            newConfig.orientation != Configuration.ORIENTATION_UNDEFINED &&
+            previousOrientation != newConfig.orientation
+        ) {
+            playbackExecutor?.stop(notify = true)
+        }
+        playerOverlayHost?.onConfigurationChanged()
         // The compact overlay is intentionally orientation-agnostic. Only the
         // target game's configuration at expansion time establishes direction.
         val active = session ?: return
@@ -91,8 +114,14 @@ class LxMusicAccessibilityService : AccessibilityService() {
     }
 
     override fun onDestroy() {
+        playbackExecutor?.stop(notify = true)
+        playbackExecutor = null
+        playerOverlayHost?.hide()
+        playerOverlayHost = null
         clearOverlays()
         session = null
+        calibrationReturnTarget = null
+        playerOverlaySessionToRestore = null
         if (instance === this) {
             instance = null
         }
@@ -100,6 +129,7 @@ class LxMusicAccessibilityService : AccessibilityService() {
     }
 
     private fun beginSession(arguments: Map<String, Any?>): Map<String, Any?> {
+        playbackExecutor?.stop(notify = true)
         if (session != null) {
             return errorResult("session_active", "已有校准会话正在运行。")
         }
@@ -108,8 +138,19 @@ class LxMusicAccessibilityService : AccessibilityService() {
         } catch (error: IllegalArgumentException) {
             return errorResult("invalid_request", error.message ?: "校准请求无效。")
         }
+        calibrationReturnTarget = parsed.launchOrigin
+        playerOverlaySessionToRestore = if (
+            parsed.launchOrigin == CalibrationLaunchOrigin.PLAYER_OVERLAY
+        ) {
+            playerOverlayHost?.snapshotSession()
+        } else {
+            null
+        }
         clearOverlays()
-        foregroundPackage = null
+        playerOverlayHost?.hide()
+        if (parsed.launchOrigin == CalibrationLaunchOrigin.MAIN_APP) {
+            foregroundPackage = null
+        }
         session = parsed
         return try {
             showCompactOverlay(parsed)
@@ -126,6 +167,13 @@ class LxMusicAccessibilityService : AccessibilityService() {
         } catch (error: Exception) {
             clearOverlays()
             session = null
+            val returnTarget = calibrationReturnTarget
+            val overlaySession = playerOverlaySessionToRestore
+            calibrationReturnTarget = null
+            playerOverlaySessionToRestore = null
+            if (returnTarget == CalibrationLaunchOrigin.PLAYER_OVERLAY) {
+                restorePlayerOverlay(overlaySession)
+            }
             errorResult(
                 "overlay_create_failed",
                 "无法创建校准悬浮层：${error.message ?: error.javaClass.simpleName}",
@@ -238,9 +286,23 @@ class LxMusicAccessibilityService : AccessibilityService() {
 
     private fun showFullOverlay() {
         val active = session ?: return
-        if (foregroundPackage == null) {
-            Toast.makeText(this, "请先切换到目标游戏，再展开校准。", Toast.LENGTH_SHORT).show()
-            return
+        val currentPackage = foregroundPackage
+        if (currentPackage == null) {
+            Toast.makeText(
+                this,
+                "未识别到前台应用，将继续校准。",
+                Toast.LENGTH_SHORT,
+            ).show()
+        } else {
+            val configuredPackage = active.targetPackageName
+            if (configuredPackage != null && currentPackage != configuredPackage) {
+                Toast.makeText(
+                    this,
+                    "当前应用与所选游戏不一致，将按当前应用继续校准。",
+                    Toast.LENGTH_SHORT,
+                ).show()
+            }
+            active.targetPackageName = currentPackage
         }
         val targetOrientation = orientationForConfiguration(resources.configuration)
         if (targetOrientation == null) {
@@ -283,6 +345,7 @@ class LxMusicAccessibilityService : AccessibilityService() {
 
     private fun saveCalibration(bounds: CalibrationBounds) {
         val active = session ?: return
+        val actualTargetPackage = foregroundPackage ?: active.targetPackageName
         val orientation = active.orientation ?: run {
             finishSession(
                 status = "error",
@@ -325,7 +388,7 @@ class LxMusicAccessibilityService : AccessibilityService() {
                 "viewportHeightPx" to (bounds.viewportBottom - bounds.viewportTop),
                 "density" to display.density,
                 "displayRotation" to display.rotation,
-                "foregroundPackage" to foregroundPackage,
+                "foregroundPackage" to actualTargetPackage,
                 "manufacturer" to android.os.Build.MANUFACTURER,
                 "model" to android.os.Build.MODEL,
                 "deviceDisplayName" to CalibrationPlatformSupport.deviceDisplayName(),
@@ -345,7 +408,6 @@ class LxMusicAccessibilityService : AccessibilityService() {
         errorCode: String? = null,
         message: String? = null,
         calibration: Map<String, Any?>? = null,
-        returnToApp: Boolean = true,
     ) {
         val active = session
         if (active == null && compactOverlay == null && calibrationOverlay == null) {
@@ -365,14 +427,36 @@ class LxMusicAccessibilityService : AccessibilityService() {
                 CalibrationPlatformSupport.mapToJsonObject(result).toString(),
             )
             .apply()
+        val returnTarget = calibrationReturnTarget ?: active?.launchOrigin
+        val overlaySession = playerOverlaySessionToRestore
         clearOverlays()
         session = null
+        calibrationReturnTarget = null
+        playerOverlaySessionToRestore = null
         if (message != null) {
             Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
         }
-        if (returnToApp) {
-            CalibrationPlatformSupport.launchMainActivity(this)
+        when (returnTarget) {
+            CalibrationLaunchOrigin.PLAYER_OVERLAY -> restorePlayerOverlay(overlaySession)
+            CalibrationLaunchOrigin.MAIN_APP,
+            null,
+            -> CalibrationPlatformSupport.launchMainActivity(this)
         }
+    }
+
+    private fun restorePlayerOverlay(
+        overlaySession: Map<String, Any?>?,
+        attempt: Int = 0,
+    ) {
+        mainHandler.postDelayed({
+            if (session != null || playerOverlayHost?.isVisible() == true) return@postDelayed
+            val host = playerOverlayHost
+                ?: PlayerOverlayHost(this, windowManager).also { playerOverlayHost = it }
+            val result = host.show(overlaySession ?: emptyMap())
+            if (result["status"] == "error" && attempt < 2) {
+                restorePlayerOverlay(overlaySession, attempt + 1)
+            }
+        }, if (attempt == 0) 0L else 250L)
     }
 
     private fun clearOverlays() {
@@ -467,6 +551,24 @@ class LxMusicAccessibilityService : AccessibilityService() {
             "message" to message,
         )
 
+    private fun openPlayerOverlay(arguments: Map<String, Any?>): Map<String, Any?> {
+        if (session != null) {
+            return errorResult("calibration_active", "请先结束当前键位校准。")
+        }
+        val host = playerOverlayHost
+            ?: PlayerOverlayHost(this, windowManager).also {
+                playerOverlayHost = it
+            }
+        return host.show(arguments)
+    }
+
+    private fun hasActiveCalibrationState(): Boolean =
+        AccessibilityPlaybackSafety.calibrationActive(
+            hasSession = session != null,
+            hasCompactOverlay = compactOverlay != null,
+            hasFullOverlay = calibrationOverlay != null,
+        )
+
     companion object {
         @Volatile
         private var instance: LxMusicAccessibilityService? = null
@@ -487,6 +589,59 @@ class LxMusicAccessibilityService : AccessibilityService() {
         }
 
         fun activeSessionId(): String? = instance?.session?.sessionId
+
+        fun startPlayback(arguments: Map<String, Any?>): Map<String, Any?> {
+            val service = instance ?: return serviceUnavailableResult()
+            if (service.hasActiveCalibrationState()) {
+                return mapOf(
+                    "status" to "error",
+                    "errorCode" to "calibration_active",
+                    "message" to "请先结束当前键位校准。",
+                )
+            }
+            return service.playbackExecutor?.start(arguments) ?: serviceUnavailableResult()
+        }
+
+        fun pausePlayback(): Map<String, Any?> =
+            instance?.playbackExecutor?.pause() ?: serviceUnavailableResult()
+
+        fun stopPlayback(notify: Boolean = false): Map<String, Any?> =
+            instance?.playbackExecutor?.stop(notify) ?: serviceUnavailableResult()
+
+        fun playbackState(): Map<String, Any?> =
+            instance?.playbackExecutor?.state() ?: serviceUnavailableResult()
+
+        fun showPlayerOverlay(arguments: Map<String, Any?>): Map<String, Any?> =
+            instance?.openPlayerOverlay(arguments)
+                ?: mapOf(
+                    "status" to "error",
+                    "errorCode" to "service_unavailable",
+                    "message" to "无障碍服务尚未连接，请关闭后重新启用。",
+                )
+
+        fun hidePlayerOverlay() {
+            instance?.playbackExecutor?.stop(notify = true)
+            instance?.playerOverlayHost?.hide()
+        }
+
+        fun updatePlayerOverlay(arguments: Map<String, Any?>) {
+            instance?.playerOverlayHost?.updateSession(arguments)
+        }
+
+        fun updatePlayerOverlayFromPlaybackEvent(event: Map<String, Any?>) {
+            instance?.playerOverlayHost?.updateFromPlaybackEvent(event)
+        }
+
+        fun isPlayerOverlayVisible(): Boolean =
+            instance?.playerOverlayHost?.isVisible() == true
+
+        fun isServiceReady(): Boolean = instance != null
+
+        private fun serviceUnavailableResult(): Map<String, Any?> = mapOf(
+            "status" to "error",
+            "errorCode" to "service_unavailable",
+            "message" to "无障碍服务尚未连接，请关闭后重新启用。",
+        )
     }
 }
 
@@ -504,7 +659,8 @@ private data class CalibrationSession(
     val layoutDisplayName: String,
     var orientation: String?,
     val keys: List<CalibrationReferenceKey>,
-    val targetPackageName: String?,
+    val launchOrigin: CalibrationLaunchOrigin,
+    var targetPackageName: String?,
     val previousCalibration: PreviousCalibration?,
 ) {
     companion object {
@@ -538,10 +694,26 @@ private data class CalibrationSession(
                 layoutDisplayName = requiredString("layoutDisplayName"),
                 orientation = null,
                 keys = keys,
+                launchOrigin = CalibrationLaunchOrigin.from(
+                    arguments["launchOrigin"] as? String,
+                ),
                 targetPackageName = (arguments["targetPackageName"] as? String)
-                    ?.takeIf(String::isNotBlank),
+                    ?.trim()
+                    ?.takeIf(String::isNotEmpty),
                 previousCalibration = previousCalibration,
             )
+        }
+    }
+}
+
+private enum class CalibrationLaunchOrigin {
+    MAIN_APP,
+    PLAYER_OVERLAY;
+
+    companion object {
+        fun from(value: String?): CalibrationLaunchOrigin = when (value) {
+            "playerOverlay" -> PLAYER_OVERLAY
+            else -> MAIN_APP
         }
     }
 }

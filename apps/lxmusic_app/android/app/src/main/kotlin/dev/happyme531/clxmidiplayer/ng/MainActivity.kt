@@ -10,12 +10,106 @@ import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
+    private var playerOverlayChannel: MethodChannel? = null
+    private var accessibilityPlaybackChannel: MethodChannel? = null
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
             CALIBRATION_CHANNEL,
         ).setMethodCallHandler(::handleCalibrationCall)
+        playerOverlayChannel = MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            PLAYER_OVERLAY_CHANNEL,
+        ).also { channel ->
+            channel.setMethodCallHandler(::handlePlayerOverlayCall)
+            PlayerOverlayCoordinator.attach(channel)
+        }
+        accessibilityPlaybackChannel = MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            ACCESSIBILITY_PLAYBACK_CHANNEL,
+        ).also { channel ->
+            channel.setMethodCallHandler(::handleAccessibilityPlaybackCall)
+            AccessibilityPlaybackCoordinator.attach(channel)
+        }
+    }
+
+    override fun cleanUpFlutterEngine(flutterEngine: FlutterEngine) {
+        playerOverlayChannel?.let { channel ->
+            PlayerOverlayCoordinator.detach(channel)
+            channel.setMethodCallHandler(null)
+        }
+        playerOverlayChannel = null
+        accessibilityPlaybackChannel?.let { channel ->
+            AccessibilityPlaybackCoordinator.detach(channel)
+            channel.setMethodCallHandler(null)
+        }
+        accessibilityPlaybackChannel = null
+        super.cleanUpFlutterEngine(flutterEngine)
+    }
+
+    private fun handleAccessibilityPlaybackCall(
+        call: MethodCall,
+        result: MethodChannel.Result,
+    ) {
+        when (call.method) {
+            "getState" -> result.success(LxMusicAccessibilityService.playbackState())
+            "start" -> {
+                @Suppress("UNCHECKED_CAST")
+                val request = call.arguments as? Map<String, Any?>
+                if (request == null) {
+                    result.success(errorResult("invalid_request", "演奏请求格式无效。"))
+                    return
+                }
+                result.success(LxMusicAccessibilityService.startPlayback(request))
+            }
+            "pause" -> result.success(LxMusicAccessibilityService.pausePlayback())
+            "stop" -> result.success(LxMusicAccessibilityService.stopPlayback())
+            else -> result.notImplemented()
+        }
+    }
+
+    private fun handlePlayerOverlayCall(call: MethodCall, result: MethodChannel.Result) {
+        when (call.method) {
+            "getState" -> result.success(playerOverlayState())
+            "openAccessibilitySettings" -> {
+                startActivity(
+                    Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    },
+                )
+                result.success(null)
+            }
+            "showOverlay" -> {
+                if (!isCalibrationServiceEnabled()) {
+                    result.success(errorResult("accessibility_disabled", "无障碍服务尚未启用。"))
+                    return
+                }
+                @Suppress("UNCHECKED_CAST")
+                val request = call.arguments as? Map<String, Any?>
+                if (request == null) {
+                    result.success(errorResult("invalid_request", "悬浮播放器请求格式无效。"))
+                    return
+                }
+                result.success(LxMusicAccessibilityService.showPlayerOverlay(request))
+            }
+            "hideOverlay" -> {
+                LxMusicAccessibilityService.hidePlayerOverlay()
+                result.success(null)
+            }
+            "updateOverlay" -> {
+                @Suppress("UNCHECKED_CAST")
+                val request = call.arguments as? Map<String, Any?>
+                if (request == null) {
+                    result.error("invalid_request", "播放器状态格式无效。", null)
+                    return
+                }
+                LxMusicAccessibilityService.updatePlayerOverlay(request)
+                result.success(null)
+            }
+            else -> result.notImplemented()
+        }
     }
 
     private fun handleCalibrationCall(call: MethodCall, result: MethodChannel.Result) {
@@ -88,6 +182,13 @@ class MainActivity : FlutterActivity() {
     private fun supportsOrientationLock(): Boolean =
         Build.VERSION.SDK_INT < 36 || resources.configuration.smallestScreenWidthDp < 600
 
+    private fun playerOverlayState(): Map<String, Any?> = mapOf(
+        "supported" to (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N),
+        "accessibilityEnabled" to isCalibrationServiceEnabled(),
+        "serviceReady" to LxMusicAccessibilityService.isServiceReady(),
+        "overlayVisible" to LxMusicAccessibilityService.isPlayerOverlayVisible(),
+    )
+
     private fun isCalibrationServiceEnabled(): Boolean {
         val expected = ComponentName(this, LxMusicAccessibilityService::class.java)
         val enabled = Settings.Secure.getString(
@@ -109,6 +210,10 @@ class MainActivity : FlutterActivity() {
     companion object {
         const val CALIBRATION_CHANNEL =
             "dev.happyme531.clxmidiplayer.ng/calibration"
+        const val PLAYER_OVERLAY_CHANNEL =
+            "dev.happyme531.clxmidiplayer.ng/player_overlay"
+        const val ACCESSIBILITY_PLAYBACK_CHANNEL =
+            "dev.happyme531.clxmidiplayer.ng/accessibility_playback"
         const val NATIVE_PREFERENCES = "calibration_native.v1"
         const val PENDING_RESULT_KEY = "pending_result"
         const val LAST_TARGET_ORIENTATION_KEY = "last_target_orientation"

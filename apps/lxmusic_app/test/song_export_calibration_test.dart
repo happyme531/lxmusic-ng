@@ -16,13 +16,19 @@ void main() {
     algorithm: LayoutAlgorithm.explicit,
     keys: <KeyDefinition>[
       KeyDefinition(id: 'C4', pitch: 60, normX: 0.5, normY: 0.5),
+      KeyDefinition(id: 'Cs4', pitch: 61, normX: 0.75, normY: 0.5),
     ],
-    pitchToKeyId: <int, String>{60: 'C4'},
+    pitchToKeyId: <int, String>{60: 'C4', 61: 'Cs4'},
   );
   const variant = InstrumentVariant(
     id: 'default',
     displayName: '默认',
     noteDurationMode: NoteDurationMode.none,
+  );
+  const holdVariant = InstrumentVariant(
+    id: 'hold',
+    displayName: '长按',
+    noteDurationMode: NoteDurationMode.nativeHold,
   );
   const profile = GameProfile(
     id: 'profile',
@@ -31,7 +37,7 @@ void main() {
     layouts: <LayoutBinding>[
       LayoutBinding(layoutId: 'layout', displayName: '测试布局'),
     ],
-    variants: <InstrumentVariant>[variant],
+    variants: <InstrumentVariant>[variant, holdVariant],
     sameKeyMinIntervalMs: 20,
   );
   final file = MusicFile(
@@ -137,6 +143,145 @@ void main() {
     expect(point['y'], 100.0);
   });
 
+  test('game playback forces native-hold variants into safe taps', () async {
+    final service = buildService(
+      Calibration(
+        key: calibrationKey,
+        orientation: 'portrait',
+        leftTopPx: (10, 20),
+        rightBottomPx: (90, 180),
+        viewportPx: (left: 0, top: 0, right: 100, bottom: 200),
+        capturedAt: DateTime.utc(2026, 7, 30),
+      ),
+    );
+
+    final exportPlan = await service.prepareExecutablePlan(
+      file: file,
+      profile: profile,
+      variant: holdVariant,
+      layout: layout,
+    );
+    final playbackPlan = await service.prepareExecutablePlan(
+      file: file,
+      profile: profile,
+      variant: holdVariant,
+      layout: layout,
+      tapOnly: true,
+    );
+
+    expect(
+      exportPlan.executablePlan.actions.first.kind,
+      ExecutableActionKind.touchGesture,
+    );
+    expect(
+      playbackPlan.executablePlan.actions.map((action) => action.kind),
+      everyElement(ExecutableActionKind.touchPoints),
+    );
+  });
+
+  test('repeated-tap mode splits long notes like the legacy player', () async {
+    final service = buildService(
+      Calibration(
+        key: calibrationKey,
+        orientation: 'portrait',
+        leftTopPx: (10, 20),
+        rightBottomPx: (90, 180),
+        viewportPx: (left: 0, top: 0, right: 100, bottom: 200),
+        capturedAt: DateTime.utc(2026, 7, 30),
+      ),
+    );
+
+    final prepared = await service.prepareExecutablePlan(
+      file: file,
+      profile: profile,
+      variant: variant,
+      layout: layout,
+      tapOnly: true,
+      repeatLongNotes: true,
+    );
+
+    expect(prepared.executablePlan.actions, hasLength(7));
+    expect(prepared.executablePlan.actions.map((action) => action.atMs), <int>[
+      100,
+      200,
+      300,
+      400,
+      500,
+      600,
+      700,
+    ]);
+    expect(
+      prepared.executablePlan.actions.map((action) => action.kind),
+      everyElement(ExecutableActionKind.touchPoints),
+    );
+  });
+
+  test(
+    'long-press mode can force native holds for the selected song',
+    () async {
+      final service = buildService(
+        Calibration(
+          key: calibrationKey,
+          orientation: 'portrait',
+          leftTopPx: (10, 20),
+          rightBottomPx: (90, 180),
+          viewportPx: (left: 0, top: 0, right: 100, bottom: 200),
+          capturedAt: DateTime.utc(2026, 7, 30),
+        ),
+      );
+
+      final prepared = await service.prepareExecutablePlan(
+        file: file,
+        profile: profile,
+        variant: variant,
+        layout: layout,
+        noteDurationModeOverride: NoteDurationMode.nativeHold,
+      );
+
+      expect(
+        prepared.executablePlan.actions.single.kind,
+        ExecutableActionKind.touchGesture,
+      );
+      final point =
+          (prepared.executablePlan.actions.single.payload['points'] as List)
+              .cast<Map<String, Object?>>()
+              .single;
+      expect(point['durationMs'], 650);
+    },
+  );
+
+  test(
+    'game playback applies its transient transpose before planning',
+    () async {
+      final service = buildService(
+        Calibration(
+          key: calibrationKey,
+          orientation: 'portrait',
+          leftTopPx: (10, 20),
+          rightBottomPx: (90, 180),
+          viewportPx: (left: 0, top: 0, right: 100, bottom: 200),
+          capturedAt: DateTime.utc(2026, 7, 30),
+        ),
+      );
+
+      final prepared = await service.prepareExecutablePlan(
+        file: file,
+        profile: profile,
+        variant: variant,
+        layout: layout,
+        tapOnly: true,
+        additionalPitchOffset: 1,
+      );
+      final point =
+          (prepared.executablePlan.actions.first.payload['points'] as List)
+              .cast<Map<String, Object?>>()
+              .first;
+
+      expect(point['keyId'], 'Cs4');
+      expect(point['x'], 70.0);
+    },
+  );
+
   test(
     'orientation change requires recalibration instead of a second record',
     () async {
@@ -192,7 +337,7 @@ class _FakeScoreParser implements ScoreParser {
           name: 'Track 1',
           channel: 0,
           notes: <NoteEvent>[
-            NoteEvent(pitch: 60, startMs: 100, durationMs: 50),
+            NoteEvent(pitch: 60, startMs: 100, durationMs: 650),
           ],
         ),
       ],

@@ -11,6 +11,7 @@ Future<CalibrationSessionResult?> launchCalibration({
   required WidgetRef ref,
   required GameProfile profile,
   required KeyLayout layout,
+  CalibrationLaunchOrigin launchOrigin = CalibrationLaunchOrigin.mainApp,
 }) async {
   final messenger = ScaffoldMessenger.of(context);
   final manager = ref.read(calibrationManagerProvider.notifier);
@@ -92,6 +93,7 @@ Future<CalibrationSessionResult?> launchCalibration({
     final result = await manager.startSession(
       profile: profile,
       layout: layout,
+      launchOrigin: launchOrigin,
       targetPackageName: targetPackageName,
     );
     if (!context.mounted) {

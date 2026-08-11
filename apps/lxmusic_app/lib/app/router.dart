@@ -3,6 +3,7 @@ import 'package:go_router/go_router.dart';
 
 import '../features/ai/ai_hub_screen.dart';
 import '../features/ai/audio_to_midi/audio_to_midi_screen.dart';
+import '../features/game_player/overlay/widgets/player_overlay_launcher_button.dart';
 import '../features/layout_preview/layout_preview_route.dart';
 import '../features/layout_preview/layout_preview_screen.dart';
 import '../features/library/library_screen.dart';
@@ -107,6 +108,8 @@ class _AppShell extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       body: navigationShell,
+      floatingActionButton: const PlayerOverlayLauncherButton(),
+      floatingActionButtonLocation: FloatingActionButtonLocation.endFloat,
       bottomNavigationBar: NavigationBar(
         selectedIndex: navigationShell.currentIndex,
         onDestinationSelected: (index) {

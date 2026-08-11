@@ -82,24 +82,10 @@ class _WorkbenchScreenState extends ConsumerState<WorkbenchScreen> {
 
           // 3. Launch button
           if (songConfigAsync.value != null)
-            Row(
-              children: [
-                Expanded(
-                  child: FilledButton.icon(
-                    onPressed: () => context.go('/preview'),
-                    icon: const Icon(Icons.piano),
-                    label: const Text('打开预览'),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: FilledButton.icon(
-                    onPressed: null, // Phase 5
-                    icon: Icon(Icons.play_arrow),
-                    label: Text('开始悬浮窗演奏'),
-                  ),
-                ),
-              ],
+            FilledButton.icon(
+              onPressed: () => context.go('/preview'),
+              icon: const Icon(Icons.piano),
+              label: const Text('打开预览'),
             ),
         ],
       ),

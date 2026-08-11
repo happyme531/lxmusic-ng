@@ -50,6 +50,20 @@ class PreparedSongExport {
   final SongConfig? config;
 }
 
+class PreparedExecutableSongPlan {
+  const PreparedExecutableSongPlan({
+    required this.config,
+    required this.semanticPlan,
+    required this.executablePlan,
+    required this.calibration,
+  });
+
+  final SongConfig config;
+  final SemanticPlan semanticPlan;
+  final ExecutablePlan executablePlan;
+  final Calibration calibration;
+}
+
 final songExportServiceProvider = Provider<SongExportService>((ref) {
   return SongExportService(
     songConfigService: ref.watch(songConfigServiceProvider),
@@ -93,6 +107,24 @@ class SongExportService {
       );
     }
 
+    if (format == ExportFormat.executablePlanJson) {
+      final prepared = await prepareExecutablePlan(
+        file: file,
+        profile: profile,
+        variant: variant,
+        layout: layout,
+      );
+      return PreparedSongExport(
+        format: format,
+        fileName:
+            '${_outputBaseName(file.fileName, profile, variant, layout)}.${format.extension}',
+        bytes: Uint8List.fromList(
+          prettyJson(prepared.executablePlan.toJson()).codeUnits,
+        ),
+        config: prepared.config,
+      );
+    }
+
     final config = await songConfigService.ensureForTarget(
       file: file,
       profile: profile,
@@ -110,66 +142,7 @@ class SongExportService {
         bytes = const MidiScoreEncoder().encode(transformed.score);
         break;
       case ExportFormat.executablePlanJson:
-        final platformState = await calibrationPlatform.getState();
-        if (!platformState.canCalibrate) {
-          throw const CalibrationUnavailableException(
-            '当前平台无法获取 Android 设备校准信息。',
-          );
-        }
-        final targetOrientation = platformState.targetOrientation;
-        if (targetOrientation == null ||
-            platformState.targetProfileId != profile.id ||
-            platformState.targetLayoutId != layout.id) {
-          throw TargetOrientationUnavailableException(
-            profileId: profile.id,
-            layoutId: layout.id,
-          );
-        }
-        final calibrationKey = CalibrationKey(
-          profileId: profile.id,
-          layoutId: layout.id,
-          deviceId: platformState.deviceId,
-        );
-        final calibration = calibrationRepository.load(calibrationKey);
-        if (calibration == null) {
-          throw MissingCalibrationException(calibrationKey);
-        }
-        if (calibration.orientation != targetOrientation) {
-          throw CalibrationOrientationMismatchException(
-            key: calibrationKey,
-            calibrationOrientation: calibration.orientation,
-            targetOrientation: targetOrientation,
-          );
-        }
-        final semanticPlan = const PerformancePlanner().plan(
-          transformed.score,
-          PlanningContext(
-            profile: profile,
-            layout: layout,
-            variant: variant,
-            customPitchToKeyId: resolveCustomPitchToKeyId(config.steps),
-          ),
-        );
-        final executablePlan = const BackendCompiler().compile(
-          semanticPlan,
-          BackendContext(
-            constraints: const BackendConstraints(
-              backendId: 'android-accessibility',
-              supportsHold: true,
-              maxSimultaneousTouches: 5,
-              minTapGapMs: 8,
-              gestureBatchWindowMs: 32,
-              supportedKinds: <String>{'touchGesture', 'touchPoints'},
-            ),
-            calibration: calibration,
-            layout: layout,
-            noteDurationMode: variant.noteDurationMode,
-          ),
-        );
-        bytes = Uint8List.fromList(
-          prettyJson(executablePlan.toJson()).codeUnits,
-        );
-        break;
+        throw StateError('executable plan should be handled before parsing.');
       case ExportFormat.originalFile:
         throw StateError('originalFile should be handled before optimization.');
     }
@@ -179,6 +152,114 @@ class SongExportService {
       fileName: fileName,
       bytes: bytes,
       config: config,
+    );
+  }
+
+  Future<PreparedExecutableSongPlan> prepareExecutablePlan({
+    required MusicFile file,
+    required GameProfile profile,
+    required InstrumentVariant variant,
+    required KeyLayout layout,
+    bool tapOnly = false,
+    bool repeatLongNotes = false,
+    NoteDurationMode? noteDurationModeOverride,
+    int additionalPitchOffset = 0,
+  }) async {
+    final config = await songConfigService.ensureForTarget(
+      file: file,
+      profile: profile,
+      variant: variant,
+      layout: layout,
+    );
+    final score = await songConfigService.parseFile(file);
+    var executionSteps = additionalPitchOffset == 0
+        ? config.steps
+        : upsertRecommendedTransformStep(
+            config.steps,
+            TransformStep(
+              type: 'pitchOffset',
+              config: <String, Object?>{
+                'offset': config.pitchOffset + additionalPitchOffset,
+              },
+            ),
+          );
+    if (repeatLongNotes) {
+      executionSteps = upsertRecommendedTransformStep(
+        executionSteps,
+        const TransformStep(
+          type: 'splitLongNote',
+          config: <String, Object?>{
+            'minDurationMs': 500,
+            'splitDurationMs': 100,
+          },
+        ),
+      );
+    }
+    final transformed = TransformPipeline(executionSteps).run(score);
+    final platformState = await calibrationPlatform.getState();
+    if (!platformState.canCalibrate) {
+      throw const CalibrationUnavailableException('当前平台无法获取 Android 设备校准信息。');
+    }
+    final targetOrientation = platformState.targetOrientation;
+    if (targetOrientation == null ||
+        platformState.targetProfileId != profile.id ||
+        platformState.targetLayoutId != layout.id) {
+      throw TargetOrientationUnavailableException(
+        profileId: profile.id,
+        layoutId: layout.id,
+      );
+    }
+    final calibrationKey = CalibrationKey(
+      profileId: profile.id,
+      layoutId: layout.id,
+      deviceId: platformState.deviceId,
+    );
+    final calibration = calibrationRepository.load(calibrationKey);
+    if (calibration == null) {
+      throw MissingCalibrationException(calibrationKey);
+    }
+    if (calibration.orientation != targetOrientation) {
+      throw CalibrationOrientationMismatchException(
+        key: calibrationKey,
+        calibrationOrientation: calibration.orientation,
+        targetOrientation: targetOrientation,
+      );
+    }
+    final semanticPlan = const PerformancePlanner().plan(
+      transformed.score,
+      PlanningContext(
+        profile: profile,
+        layout: layout,
+        variant: variant,
+        customPitchToKeyId: resolveCustomPitchToKeyId(executionSteps),
+      ),
+    );
+    final executablePlan = const BackendCompiler().compile(
+      semanticPlan,
+      BackendContext(
+        constraints: BackendConstraints(
+          backendId: 'android-accessibility',
+          supportsHold: !tapOnly,
+          maxSimultaneousTouches: 5,
+          minTapGapMs: 8,
+          gestureBatchWindowMs: 32,
+          supportedKinds: tapOnly
+              ? const <String>{'touchPoints'}
+              : const <String>{'touchGesture', 'touchPoints'},
+          pressDurationMs: tapOnly ? 30 : 5,
+        ),
+        calibration: calibration,
+        layout: layout,
+        noteDurationMode: tapOnly
+            ? NoteDurationMode.none
+            : noteDurationModeOverride ?? variant.noteDurationMode,
+      ),
+    );
+    return PreparedExecutableSongPlan(
+      config: config,
+      semanticPlan: semanticPlan,
+      executablePlan: executablePlan,
+      calibration: calibration,
     );
   }
 
