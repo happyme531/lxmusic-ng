@@ -1,6 +1,8 @@
 import 'dart:io';
+import 'dart:math';
 import 'dart:typed_data';
 
+import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
 import 'file_store.dart';
@@ -31,12 +33,7 @@ class IoPlatformFileStore implements PlatformFileStore {
       throw FileSystemException('Source file not found', sourcePath);
     }
 
-    final libraryDir = await _ensureMusicLibraryDirectory();
-    final destinationPath = '${libraryDir.path}/$fileName';
-    final destinationFile = File(destinationPath);
-    if (await destinationFile.exists()) {
-      await destinationFile.delete();
-    }
+    final destinationPath = await _newLibraryFilePath(fileName);
     await sourceFile.copy(destinationPath);
     return destinationPath;
   }
@@ -46,12 +43,8 @@ class IoPlatformFileStore implements PlatformFileStore {
     required String fileName,
     required Uint8List bytes,
   }) async {
-    final libraryDir = await _ensureMusicLibraryDirectory();
-    final destinationPath = '${libraryDir.path}/$fileName';
+    final destinationPath = await _newLibraryFilePath(fileName);
     final destinationFile = File(destinationPath);
-    if (await destinationFile.exists()) {
-      await destinationFile.delete();
-    }
     await destinationFile.writeAsBytes(bytes, flush: true);
     return destinationPath;
   }
@@ -73,5 +66,17 @@ class IoPlatformFileStore implements PlatformFileStore {
       await libraryDir.create(recursive: true);
     }
     return libraryDir;
+  }
+
+  Future<String> _newLibraryFilePath(String fileName) async {
+    final libraryDir = await _ensureMusicLibraryDirectory();
+    final singles = Directory(p.join(libraryDir.path, 'imports', 'single'));
+    await singles.create(recursive: true);
+    final safeName = fileName.replaceAll(RegExp(r'[^a-zA-Z0-9._-]+'), '_');
+    final nonce = Random().nextInt(1 << 32).toRadixString(16);
+    return p.join(
+      singles.path,
+      '${DateTime.now().microsecondsSinceEpoch}_${nonce}_$safeName',
+    );
   }
 }

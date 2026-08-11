@@ -45,6 +45,8 @@ dependencies:
 
   # File & storage
   audio_decoder: ^0.8.1
+  archive: ^4.0.9
+  charset: ^2.0.1
   crypto: ^3.0.6
   fftea: ^1.5.0+1
   file_picker: ^11.0.2

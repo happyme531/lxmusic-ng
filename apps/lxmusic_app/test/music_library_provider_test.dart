@@ -8,6 +8,7 @@ import 'package:lxmusic_app/core/platform/file_store.dart';
 import 'package:lxmusic_app/features/library/models/library_playlist.dart';
 import 'package:lxmusic_app/features/library/models/music_file.dart';
 import 'package:lxmusic_app/features/library/providers/music_library_provider.dart';
+import 'package:lxmusic_app/features/library/services/archive_import_service.dart';
 import 'package:lxmusic_core/lxmusic_core.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -192,6 +193,216 @@ void main() {
     },
   );
 
+  test(
+    'rename conflict keeps both ordinary files and preserves compound suffix',
+    () async {
+      final container = ProviderContainer(
+        overrides: [
+          fileStoreProvider.overrideWithValue(_TestPlatformFileStore()),
+          parserRegistryProvider.overrideWithValue(
+            ParserRegistry(<String, ScoreParser>{'midi': _FakeMidiParser()}),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+      final notifier = container.read(musicLibraryProvider.notifier);
+      await container.read(musicLibraryProvider.future);
+      await notifier.importFiles(<PickedFileData>[
+        PickedFileData(
+          fileName: 'demo.mid',
+          bytes: Uint8List.fromList(const <int>[1]),
+        ),
+      ]);
+
+      final report = await notifier.importFiles(
+        <PickedFileData>[
+          PickedFileData(
+            fileName: 'demo.mid',
+            bytes: Uint8List.fromList(const <int>[2]),
+          ),
+        ],
+        resolveConflict: (_) async => const MusicImportConflictDecision(
+          action: MusicImportConflictAction.rename,
+        ),
+      );
+
+      expect(report.importedCount, 1);
+      expect(report.renamedCount, 1);
+      expect(
+        container
+            .read(musicLibraryProvider)
+            .value!
+            .files
+            .map((file) => file.fileName)
+            .toSet(),
+        <String>{'demo.mid', 'demo (2).mid'},
+      );
+    },
+  );
+
+  test(
+    'apply-to-remaining resolves later conflicts without asking again',
+    () async {
+      final container = ProviderContainer(
+        overrides: [
+          fileStoreProvider.overrideWithValue(_TestPlatformFileStore()),
+          parserRegistryProvider.overrideWithValue(
+            ParserRegistry(<String, ScoreParser>{'midi': _FakeMidiParser()}),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+      final notifier = container.read(musicLibraryProvider.notifier);
+      await container.read(musicLibraryProvider.future);
+      await notifier.importFiles(<PickedFileData>[
+        PickedFileData(
+          fileName: 'a.mid',
+          bytes: Uint8List.fromList(const <int>[1]),
+        ),
+        PickedFileData(
+          fileName: 'b.mid',
+          bytes: Uint8List.fromList(const <int>[1]),
+        ),
+      ]);
+      var resolverCalls = 0;
+
+      final report = await notifier.importFiles(
+        <PickedFileData>[
+          PickedFileData(
+            fileName: 'a.mid',
+            bytes: Uint8List.fromList(const <int>[2]),
+          ),
+          PickedFileData(
+            fileName: 'b.mid',
+            bytes: Uint8List.fromList(const <int>[2]),
+          ),
+        ],
+        resolveConflict: (_) async {
+          resolverCalls++;
+          return const MusicImportConflictDecision(
+            action: MusicImportConflictAction.rename,
+            applyToRemaining: true,
+          );
+        },
+      );
+
+      expect(resolverCalls, 1);
+      expect(report.importedCount, 2);
+      expect(report.renamedCount, 2);
+      expect(
+        container
+            .read(musicLibraryProvider)
+            .value!
+            .files
+            .map((file) => file.fileName)
+            .toSet(),
+        <String>{'a.mid', 'a (2).mid', 'b.mid', 'b (2).mid'},
+      );
+    },
+  );
+
+  test('stop keeps ordinary files completed before the conflict', () async {
+    final container = ProviderContainer(
+      overrides: [
+        fileStoreProvider.overrideWithValue(_TestPlatformFileStore()),
+        parserRegistryProvider.overrideWithValue(
+          ParserRegistry(<String, ScoreParser>{'midi': _FakeMidiParser()}),
+        ),
+      ],
+    );
+    addTearDown(container.dispose);
+    final notifier = container.read(musicLibraryProvider.notifier);
+    await container.read(musicLibraryProvider.future);
+    await notifier.importFiles(<PickedFileData>[
+      PickedFileData(
+        fileName: 'existing.mid',
+        bytes: Uint8List.fromList(const <int>[1]),
+      ),
+    ]);
+
+    final report = await notifier.importFiles(
+      <PickedFileData>[
+        PickedFileData(
+          fileName: 'first.mid',
+          bytes: Uint8List.fromList(const <int>[1]),
+        ),
+        PickedFileData(
+          fileName: 'existing.mid',
+          bytes: Uint8List.fromList(const <int>[2]),
+        ),
+        PickedFileData(
+          fileName: 'last.mid',
+          bytes: Uint8List.fromList(const <int>[1]),
+        ),
+      ],
+      resolveConflict: (_) async => const MusicImportConflictDecision(
+        action: MusicImportConflictAction.stop,
+      ),
+    );
+
+    expect(report.stopped, isTrue);
+    expect(report.importedCount, 1);
+    expect(
+      container
+          .read(musicLibraryProvider)
+          .value!
+          .files
+          .map((file) => file.fileName)
+          .toSet(),
+      <String>{'existing.mid', 'first.mid'},
+    );
+  });
+
+  test('ZIP import creates, numbers, and selects a playlist', () async {
+    final archiveService = _FakeArchiveImportService(
+      ArchiveImportResult(
+        archiveFileName: '练习.zip',
+        files: const <PreparedImportedMusicFile>[
+          PreparedImportedMusicFile(
+            path: 'archive://scale.txt',
+            fileName: 'scale.txt',
+            formatId: 'domiso',
+            trackCount: 1,
+            durationMs: 1000,
+            noteCount: 3,
+            wasOverwrite: false,
+            wasRenamed: false,
+          ),
+        ],
+        playlistFileNames: const <String>['scale.txt'],
+        failures: const <MusicImportFailure>[],
+        storageRoot: 'archive://root',
+        reusedCount: 0,
+        skippedCount: 0,
+        ignoredCount: 2,
+        stopped: false,
+      ),
+    );
+    final container = ProviderContainer(
+      overrides: [
+        fileStoreProvider.overrideWithValue(_TestPlatformFileStore()),
+        archiveImportServiceProvider.overrideWithValue(archiveService),
+      ],
+    );
+    addTearDown(container.dispose);
+    await container.read(musicLibraryProvider.future);
+    final notifier = container.read(musicLibraryProvider.notifier);
+    expect(await notifier.createPlaylist('练习'), isTrue);
+
+    final report = await notifier.importFiles(const <PickedFileData>[
+      PickedFileData(fileName: '练习.zip', sourcePath: '/tmp/练习.zip'),
+    ]);
+
+    final library = container.read(musicLibraryProvider).value!;
+    final importedPlaylist = library.playlists.firstWhere(
+      (playlist) => playlist.name == '练习 (2)',
+    );
+    expect(importedPlaylist.musicFileNames, <String>['scale.txt']);
+    expect(library.currentPlaylistId, importedPlaylist.id);
+    expect(report.archives.single.playlistName, '练习 (2)');
+    expect(report.ignoredCount, 2);
+  });
+
   test('filtered music files keeps favorites above non-favorites', () async {
     final container = ProviderContainer(
       overrides: [
@@ -333,4 +544,30 @@ class _TestPlatformFileStore implements PlatformFileStore {
   Future<void> writeBytes(String path, Uint8List bytes) async {
     _files[path] = Uint8List.fromList(bytes);
   }
+}
+
+class _FakeArchiveImportService extends ArchiveImportService {
+  _FakeArchiveImportService(this.result);
+
+  final ArchiveImportResult result;
+
+  @override
+  bool get isSupported => true;
+
+  @override
+  Future<void> cleanupUnreferencedStorage(Set<String> referencedPaths) async {}
+
+  @override
+  Future<void> discardStorage(String? storageRoot) async {}
+
+  @override
+  Future<ArchiveImportResult> importArchive({
+    required String archiveFileName,
+    required String? sourcePath,
+    required Uint8List? bytes,
+    required Set<String> knownFileNames,
+    required MusicImportConflictResolver resolveConflict,
+    required MusicImportProgressCallback onProgress,
+    required MusicImportCancellationToken cancellationToken,
+  }) async => result;
 }

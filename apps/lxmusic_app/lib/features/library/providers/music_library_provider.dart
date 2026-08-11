@@ -1,6 +1,6 @@
 import 'dart:convert';
-import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:lxmusic_core/lxmusic_core.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -8,7 +8,11 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../../core/service_locator.dart';
 import '../../../core/platform/file_store.dart';
 import '../models/library_playlist.dart';
+import '../models/music_import.dart';
 import '../models/music_file.dart';
+import '../services/archive_import_service.dart';
+
+export '../models/music_import.dart';
 
 const _libraryIndexStorageKey = 'music_library_index';
 const _playlistStorageKey = 'music_library_playlists';
@@ -17,34 +21,18 @@ const _selectedPlaylistStorageKey = 'music_library_selected_playlist';
 const allSongsPlaylistId = 'all';
 const favoritesPlaylistId = 'favorites';
 
-enum MusicImportFailureKind {
-  unreadableFile,
-  formatDetectionFailed,
-  invalidFormat,
-  emptyScore,
-  storageError,
+Map<String, Object?> _decodeLibraryPersistence(List<String?> raw) {
+  return <String, Object?>{
+    'files': raw[0] == null ? <Object?>[] : jsonDecode(raw[0]!) as List,
+    'playlists': raw[1] == null ? <Object?>[] : jsonDecode(raw[1]!) as List,
+  };
 }
 
-class MusicImportFailure {
-  const MusicImportFailure({
-    required this.fileName,
-    required this.kind,
-    required this.message,
-  });
-
-  final String fileName;
-  final MusicImportFailureKind kind;
-  final String message;
-}
-
-class MusicImportReport {
-  const MusicImportReport({
-    required this.importedCount,
-    required this.failures,
-  });
-
-  final int importedCount;
-  final List<MusicImportFailure> failures;
+Map<String, String> _encodeLibraryPersistence(Map<String, Object?> raw) {
+  return <String, String>{
+    if (raw.containsKey('files')) 'files': jsonEncode(raw['files']),
+    if (raw.containsKey('playlists')) 'playlists': jsonEncode(raw['playlists']),
+  };
 }
 
 final musicLibraryProvider =
@@ -121,15 +109,16 @@ final filteredMusicFilesProvider = Provider<AsyncValue<List<MusicFile>>>((ref) {
           .where((file) => file.fileName.toLowerCase().contains(query))
           .toList();
     }
+    final favoriteNames = library.favoritePlaylist.musicFileNames.toSet();
     final sorted = result.toList()
-      ..sort((a, b) => _compareMusicFiles(library, a, b));
+      ..sort((a, b) => _compareMusicFiles(favoriteNames, a, b));
     return sorted;
   });
 });
 
-int _compareMusicFiles(MusicLibraryState library, MusicFile a, MusicFile b) {
-  final favoriteOrder = (library.isFavorite(b.fileName) ? 1 : 0).compareTo(
-    library.isFavorite(a.fileName) ? 1 : 0,
+int _compareMusicFiles(Set<String> favoriteNames, MusicFile a, MusicFile b) {
+  final favoriteOrder = (favoriteNames.contains(b.fileName) ? 1 : 0).compareTo(
+    favoriteNames.contains(a.fileName) ? 1 : 0,
   );
   if (favoriteOrder != 0) {
     return favoriteOrder;
@@ -141,8 +130,24 @@ class MusicLibraryNotifier extends AsyncNotifier<MusicLibraryState> {
   @override
   Future<MusicLibraryState> build() async {
     final prefs = await SharedPreferences.getInstance();
-    final files = _loadIndex(prefs);
-    var playlists = _loadPlaylists(prefs);
+    final decoded = await compute(_decodeLibraryPersistence, <String?>[
+      prefs.getString(_libraryIndexStorageKey),
+      prefs.getString(_playlistStorageKey),
+    ]);
+    final files =
+        (decoded['files']! as List)
+            .whereType<Map>()
+            .map(
+              (item) => Map<String, Object?>.from(item.cast<String, Object?>()),
+            )
+            .map(MusicFile.fromJson)
+            .toList()
+          ..sort((a, b) => a.fileName.compareTo(b.fileName));
+    var playlists = (decoded['playlists']! as List)
+        .whereType<Map>()
+        .map((item) => Map<String, Object?>.from(item.cast<String, Object?>()))
+        .map(LibraryPlaylist.fromJson)
+        .toList();
     final legacyFavorites = files
         .where((file) => file.isFavorite)
         .map((file) => file.fileName)
@@ -221,32 +226,12 @@ class MusicLibraryNotifier extends AsyncNotifier<MusicLibraryState> {
     if (dirty) {
       await _saveState(next);
     }
+    try {
+      await ref
+          .read(archiveImportServiceProvider)
+          .cleanupUnreferencedStorage(files.map((file) => file.path).toSet());
+    } catch (_) {}
     return next;
-  }
-
-  List<MusicFile> _loadIndex(SharedPreferences prefs) {
-    final raw = prefs.getString(_libraryIndexStorageKey);
-    if (raw == null) {
-      return <MusicFile>[];
-    }
-    final list = (jsonDecode(raw) as List)
-        .whereType<Map>()
-        .map((item) => Map<String, Object?>.from(item.cast<String, Object?>()))
-        .toList();
-    return list.map(MusicFile.fromJson).toList()
-      ..sort((a, b) => a.fileName.compareTo(b.fileName));
-  }
-
-  List<LibraryPlaylist> _loadPlaylists(SharedPreferences prefs) {
-    final raw = prefs.getString(_playlistStorageKey);
-    if (raw == null) {
-      return <LibraryPlaylist>[];
-    }
-    final list = (jsonDecode(raw) as List)
-        .whereType<Map>()
-        .map((item) => Map<String, Object?>.from(item.cast<String, Object?>()))
-        .toList();
-    return list.map(LibraryPlaylist.fromJson).toList();
   }
 
   List<LibraryPlaylist> _dedupePlaylists(List<LibraryPlaylist> playlists) {
@@ -260,36 +245,187 @@ class MusicLibraryNotifier extends AsyncNotifier<MusicLibraryState> {
     return deduped;
   }
 
-  Future<void> _saveState(MusicLibraryState next) async {
+  Future<void> _saveState(
+    MusicLibraryState next, {
+    bool saveFiles = true,
+    bool savePlaylists = true,
+    bool saveSelection = true,
+  }) async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(
-      _libraryIndexStorageKey,
-      jsonEncode(next.files.map((file) => file.toJson()).toList()),
-    );
-    await prefs.setString(
-      _playlistStorageKey,
-      jsonEncode(next.playlists.map((playlist) => playlist.toJson()).toList()),
-    );
-    await prefs.setString(_selectedPlaylistStorageKey, next.currentPlaylistId);
+    if (saveFiles || savePlaylists) {
+      final encoded =
+          await compute(_encodeLibraryPersistence, <String, Object?>{
+            if (saveFiles)
+              'files': next.files
+                  .map((file) => file.toJson())
+                  .toList(growable: false),
+            if (savePlaylists)
+              'playlists': next.playlists
+                  .map((playlist) => playlist.toJson())
+                  .toList(growable: false),
+          });
+      if (encoded['files'] case final files?) {
+        await prefs.setString(_libraryIndexStorageKey, files);
+      }
+      if (encoded['playlists'] case final playlists?) {
+        await prefs.setString(_playlistStorageKey, playlists);
+      }
+    }
+    if (saveSelection) {
+      await prefs.setString(
+        _selectedPlaylistStorageKey,
+        next.currentPlaylistId,
+      );
+    }
   }
 
-  Future<void> _replaceState(MusicLibraryState next) async {
-    await _saveState(next);
+  Future<void> _replaceState(
+    MusicLibraryState next, {
+    bool saveFiles = true,
+    bool savePlaylists = true,
+    bool saveSelection = true,
+  }) async {
+    await _saveState(
+      next,
+      saveFiles: saveFiles,
+      savePlaylists: savePlaylists,
+      saveSelection: saveSelection,
+    );
     state = AsyncData(next);
   }
 
   Future<MusicImportReport> importFiles(
-    List<PickedFileData> pickedFiles,
-  ) async {
+    List<PickedFileData> pickedFiles, {
+    MusicImportConflictResolver? resolveConflict,
+    MusicImportProgressCallback? onProgress,
+    MusicImportCancellationToken? cancellationToken,
+  }) async {
     final registry = ref.read(parserRegistryProvider);
     final detector = ref.read(scoreFormatDetectorProvider);
     final fileStore = ref.read(fileStoreProvider);
+    final archiveImporter = ref.read(archiveImportServiceProvider);
     final current = state.value ?? const MusicLibraryState.empty();
-    final files = List<MusicFile>.of(current.files);
+    final filesByName = <String, MusicFile>{
+      for (final file in current.files) file.fileName: file,
+    };
     final failures = <MusicImportFailure>[];
+    final createdPaths = <String>{};
+    final supersededPaths = <String>{};
+    final archiveStorageRoots = <String>{};
+    final pendingArchivePlaylists =
+        <({String archiveFileName, List<String> members})>[];
+    final token = cancellationToken ?? MusicImportCancellationToken();
+    final progress = onProgress ?? (_) {};
+    final conflictResolver =
+        resolveConflict ??
+        (_) async => const MusicImportConflictDecision(
+          action: MusicImportConflictAction.overwrite,
+          applyToRemaining: true,
+        );
+    MusicImportConflictAction? remainingConflictAction;
     var imported = 0;
+    var overwritten = 0;
+    var renamed = 0;
+    var reused = 0;
+    var skipped = 0;
+    var ignored = 0;
+    var stopped = false;
+    var processedSources = 0;
+
+    Future<MusicImportConflictDecision> decideConflict(
+      MusicImportConflict conflict,
+    ) async {
+      final remembered = remainingConflictAction;
+      if (remembered != null) {
+        return MusicImportConflictDecision(action: remembered);
+      }
+      final decision = await conflictResolver(conflict);
+      if (decision.applyToRemaining &&
+          decision.action != MusicImportConflictAction.stop) {
+        remainingConflictAction = decision.action;
+      }
+      return decision;
+    }
 
     for (final pickedFile in pickedFiles) {
+      if (token.isStopped) {
+        stopped = true;
+        break;
+      }
+      final fileName = pickedFile.fileName;
+      if (fileName.toLowerCase().endsWith('.zip')) {
+        late final ArchiveImportResult result;
+        try {
+          result = await archiveImporter.importArchive(
+            archiveFileName: fileName,
+            sourcePath: pickedFile.sourcePath,
+            bytes: pickedFile.bytes,
+            knownFileNames: filesByName.keys.toSet(),
+            resolveConflict: decideConflict,
+            onProgress: progress,
+            cancellationToken: token,
+          );
+        } catch (error) {
+          failures.add(
+            MusicImportFailure(
+              fileName: fileName,
+              kind: MusicImportFailureKind.invalidArchive,
+              message: 'ZIP 导入失败：$error',
+            ),
+          );
+          processedSources++;
+          continue;
+        }
+        failures.addAll(result.failures);
+        reused += result.reusedCount;
+        skipped += result.skippedCount;
+        ignored += result.ignoredCount;
+        if (result.storageRoot case final root?) {
+          archiveStorageRoots.add(root);
+        }
+        for (final prepared in result.files) {
+          final previous = filesByName[prepared.fileName];
+          if (previous != null && previous.path != prepared.path) {
+            supersededPaths.add(previous.path);
+          }
+          filesByName[prepared.fileName] = MusicFile(
+            path: prepared.path,
+            fileName: prepared.fileName,
+            formatId: prepared.formatId,
+            trackCount: prepared.trackCount,
+            durationMs: prepared.durationMs,
+            noteCount: prepared.noteCount,
+            importedAt: DateTime.now(),
+          );
+          createdPaths.add(prepared.path);
+          imported++;
+          if (prepared.wasOverwrite) {
+            overwritten++;
+          }
+          if (prepared.wasRenamed) {
+            renamed++;
+          }
+        }
+        final members =
+            result.playlistFileNames
+                .where(filesByName.containsKey)
+                .toSet()
+                .toList()
+              ..sort();
+        if (members.isNotEmpty) {
+          pendingArchivePlaylists.add((
+            archiveFileName: fileName,
+            members: members,
+          ));
+        }
+        processedSources++;
+        if (result.stopped || token.isStopped) {
+          stopped = true;
+          break;
+        }
+        continue;
+      }
+
       if (!pickedFile.hasReadableContent) {
         failures.add(
           MusicImportFailure(
@@ -298,9 +434,9 @@ class MusicLibraryNotifier extends AsyncNotifier<MusicLibraryState> {
             message: '无法读取文件内容',
           ),
         );
+        processedSources++;
         continue;
       }
-      final fileName = pickedFile.fileName;
       late final Uint8List bytes;
       try {
         bytes =
@@ -314,6 +450,7 @@ class MusicLibraryNotifier extends AsyncNotifier<MusicLibraryState> {
             message: '无法读取文件内容',
           ),
         );
+        processedSources++;
         continue;
       }
 
@@ -326,6 +463,7 @@ class MusicLibraryNotifier extends AsyncNotifier<MusicLibraryState> {
             message: detection.message,
           ),
         );
+        processedSources++;
         continue;
       }
       final format = (detection as DetectedScoreFormat).formatId;
@@ -341,6 +479,7 @@ class MusicLibraryNotifier extends AsyncNotifier<MusicLibraryState> {
             message: _parserFailureMessage(format, error),
           ),
         );
+        processedSources++;
         continue;
       }
       if (score.totalNoteCount == 0) {
@@ -351,40 +490,70 @@ class MusicLibraryNotifier extends AsyncNotifier<MusicLibraryState> {
             message: '乐谱中没有可播放音符',
           ),
         );
+        processedSources++;
         continue;
+      }
+
+      var targetName = fileName;
+      var wasOverwrite = false;
+      var wasRenamed = false;
+      if (filesByName.containsKey(targetName)) {
+        final decision = await decideConflict(
+          MusicImportConflict(
+            fileName: targetName,
+            sourceLabel: fileName,
+            fromArchive: false,
+          ),
+        );
+        switch (decision.action) {
+          case MusicImportConflictAction.overwrite:
+            wasOverwrite = true;
+            break;
+          case MusicImportConflictAction.skip:
+            skipped++;
+            processedSources++;
+            continue;
+          case MusicImportConflictAction.rename:
+            targetName = nextAvailableMusicFileName(
+              targetName,
+              filesByName.keys.toSet(),
+            );
+            wasRenamed = true;
+            break;
+          case MusicImportConflictAction.stop:
+            stopped = true;
+            break;
+        }
+        if (stopped) {
+          break;
+        }
       }
 
       late final String destPath;
       try {
         destPath = await fileStore.importBytes(
-          fileName: fileName,
+          fileName: targetName,
           bytes: bytes,
         );
       } catch (_) {
         failures.add(
           MusicImportFailure(
-            fileName: fileName,
+            fileName: targetName,
             kind: MusicImportFailureKind.storageError,
             message: '保存到曲库失败',
           ),
         );
+        processedSources++;
         continue;
       }
 
-      final previous = files
-          .where((file) => file.fileName == fileName)
-          .toList();
-      for (final existing in previous) {
-        if (existing.path == destPath) {
-          continue;
-        }
-        try {
-          await fileStore.deleteFile(existing.path);
-        } catch (_) {}
+      final previous = filesByName[targetName];
+      if (previous != null && previous.path != destPath) {
+        supersededPaths.add(previous.path);
       }
       final musicFile = MusicFile(
         path: destPath,
-        fileName: fileName,
+        fileName: targetName,
         formatId: format,
         trackCount: score.tracks.length,
         durationMs: score.totalDurationMs,
@@ -392,16 +561,142 @@ class MusicLibraryNotifier extends AsyncNotifier<MusicLibraryState> {
         importedAt: DateTime.now(),
       );
 
-      files.removeWhere((file) => file.fileName == fileName);
-      files.add(musicFile);
+      filesByName[targetName] = musicFile;
+      createdPaths.add(destPath);
       imported++;
+      if (wasOverwrite) {
+        overwritten++;
+      }
+      if (wasRenamed) {
+        renamed++;
+      }
+      processedSources++;
+      progress(
+        MusicImportProgress(
+          stage: MusicImportStage.importing,
+          sourceLabel: fileName,
+          currentFileName: fileName,
+          processedCount: processedSources,
+          totalCount: pickedFiles.length,
+          importedCount: imported,
+          reusedCount: reused,
+          skippedCount: skipped,
+          failedCount: failures.length,
+          ignoredCount: ignored,
+        ),
+      );
     }
 
-    if (imported > 0) {
-      files.sort((a, b) => a.fileName.compareTo(b.fileName));
-      await _replaceState(current.copyWith(files: files));
+    final playlists = List<LibraryPlaylist>.of(current.playlists);
+    final archiveReports = <MusicImportArchiveReport>[];
+    var selectedPlaylistId = current.currentPlaylistId;
+    for (var index = 0; index < pendingArchivePlaylists.length; index++) {
+      final pending = pendingArchivePlaylists[index];
+      final baseName = _archivePlaylistBaseName(pending.archiveFileName);
+      final playlistName = _nextPlaylistName(
+        baseName,
+        playlists.map((playlist) => playlist.name).toSet(),
+      );
+      final playlistId =
+          'playlist_${DateTime.now().microsecondsSinceEpoch}_$index';
+      playlists.add(
+        LibraryPlaylist(
+          id: playlistId,
+          name: playlistName,
+          musicFileNames: pending.members,
+          createdAt: DateTime.now(),
+        ),
+      );
+      selectedPlaylistId = playlistId;
+      archiveReports.add(
+        MusicImportArchiveReport(
+          archiveFileName: pending.archiveFileName,
+          playlistName: playlistName,
+          memberCount: pending.members.length,
+        ),
+      );
     }
-    return MusicImportReport(importedCount: imported, failures: failures);
+
+    if (imported > 0 || archiveReports.isNotEmpty) {
+      final files = filesByName.values.toList()
+        ..sort((a, b) => a.fileName.compareTo(b.fileName));
+      progress(
+        const MusicImportProgress(
+          stage: MusicImportStage.saving,
+          sourceLabel: '正在保存曲库索引',
+        ),
+      );
+      try {
+        await _replaceState(
+          current.copyWith(
+            files: files,
+            playlists: playlists,
+            currentPlaylistId: selectedPlaylistId,
+          ),
+        );
+      } catch (_) {
+        for (final path in createdPaths) {
+          try {
+            await fileStore.deleteFile(path);
+          } catch (_) {}
+        }
+        for (final root in archiveStorageRoots) {
+          try {
+            await archiveImporter.discardStorage(root);
+          } catch (_) {}
+        }
+        failures.add(
+          const MusicImportFailure(
+            fileName: '曲库索引',
+            kind: MusicImportFailureKind.storageError,
+            message: '保存曲库索引失败，已回滚本次导入',
+          ),
+        );
+        imported = 0;
+        overwritten = 0;
+        renamed = 0;
+        reused = 0;
+        archiveReports.clear();
+        try {
+          await _saveState(current);
+        } catch (_) {}
+      }
+      if (imported > 0 || archiveReports.isNotEmpty) {
+        final retainedPaths = files.map((file) => file.path).toSet();
+        for (final path in supersededPaths) {
+          if (retainedPaths.contains(path)) {
+            continue;
+          }
+          try {
+            await fileStore.deleteFile(path);
+          } catch (_) {}
+        }
+      }
+    }
+    progress(
+      MusicImportProgress(
+        stage: MusicImportStage.completed,
+        sourceLabel: '导入完成',
+        processedCount: processedSources,
+        totalCount: pickedFiles.length,
+        importedCount: imported,
+        reusedCount: reused,
+        skippedCount: skipped,
+        failedCount: failures.length,
+        ignoredCount: ignored,
+      ),
+    );
+    return MusicImportReport(
+      importedCount: imported,
+      overwrittenCount: overwritten,
+      renamedCount: renamed,
+      reusedCount: reused,
+      skippedCount: skipped,
+      ignoredCount: ignored,
+      stopped: stopped,
+      failures: failures,
+      archives: archiveReports,
+    );
   }
 
   String _parserFailureMessage(String format, Object error) {
@@ -410,6 +705,28 @@ class MusicLibraryNotifier extends AsyncNotifier<MusicLibraryState> {
       _ => '文件结构不符合要求',
     };
     return '$format 文件内容无效：$detail';
+  }
+
+  String _archivePlaylistBaseName(String archiveFileName) {
+    final normalized = archiveFileName.replaceAll('\\', '/');
+    final name = normalized.split('/').last;
+    final base = name.toLowerCase().endsWith('.zip')
+        ? name.substring(0, name.length - 4)
+        : name;
+    return base.trim().isEmpty ? 'ZIP 歌单' : base.trim();
+  }
+
+  String _nextPlaylistName(String baseName, Set<String> reservedNames) {
+    if (!reservedNames.contains(baseName)) {
+      return baseName;
+    }
+    var index = 2;
+    var candidate = '$baseName ($index)';
+    while (reservedNames.contains(candidate)) {
+      index++;
+      candidate = '$baseName ($index)';
+    }
+    return candidate;
   }
 
   Future<void> setCurrentPlaylist(String playlistId) async {
@@ -421,7 +738,11 @@ class MusicLibraryNotifier extends AsyncNotifier<MusicLibraryState> {
         !current.playlists.any((playlist) => playlist.id == playlistId)) {
       return;
     }
-    await _replaceState(current.copyWith(currentPlaylistId: playlistId));
+    await _replaceState(
+      current.copyWith(currentPlaylistId: playlistId),
+      saveFiles: false,
+      savePlaylists: false,
+    );
   }
 
   Future<bool> createPlaylist(String name) async {
@@ -445,7 +766,7 @@ class MusicLibraryNotifier extends AsyncNotifier<MusicLibraryState> {
         ),
       ],
     );
-    await _replaceState(next);
+    await _replaceState(next, saveFiles: false, saveSelection: false);
     return true;
   }
 
@@ -468,7 +789,11 @@ class MusicLibraryNotifier extends AsyncNotifier<MusicLibraryState> {
     }
     final playlists = List<LibraryPlaylist>.of(current.playlists);
     playlists[index] = playlists[index].copyWith(name: trimmed);
-    await _replaceState(current.copyWith(playlists: playlists));
+    await _replaceState(
+      current.copyWith(playlists: playlists),
+      saveFiles: false,
+      saveSelection: false,
+    );
     return true;
   }
 
@@ -495,6 +820,7 @@ class MusicLibraryNotifier extends AsyncNotifier<MusicLibraryState> {
             ? allSongsPlaylistId
             : current.currentPlaylistId,
       ),
+      saveFiles: false,
     );
     return true;
   }
@@ -525,7 +851,11 @@ class MusicLibraryNotifier extends AsyncNotifier<MusicLibraryState> {
     }
     final playlists = List<LibraryPlaylist>.of(current.playlists);
     playlists[index] = playlists[index].copyWith(musicFileNames: nextNames);
-    await _replaceState(current.copyWith(playlists: playlists));
+    await _replaceState(
+      current.copyWith(playlists: playlists),
+      saveFiles: false,
+      saveSelection: false,
+    );
     return added;
   }
 
@@ -554,7 +884,11 @@ class MusicLibraryNotifier extends AsyncNotifier<MusicLibraryState> {
     }
     final playlists = List<LibraryPlaylist>.of(current.playlists);
     playlists[index] = playlists[index].copyWith(musicFileNames: nextNames);
-    await _replaceState(current.copyWith(playlists: playlists));
+    await _replaceState(
+      current.copyWith(playlists: playlists),
+      saveFiles: false,
+      saveSelection: false,
+    );
     return removed;
   }
 

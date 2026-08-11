@@ -4,6 +4,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../features/calibration/data/app_calibration_repository.dart';
 import '../features/calibration/platform/calibration_platform.dart';
+import '../features/library/services/archive_import_service.dart';
+import '../features/library/services/archive_import_service_factory.dart';
 import 'platform/file_store.dart';
 import 'platform/file_store_factory.dart';
 
@@ -19,6 +21,10 @@ final assetBundleProvider = Provider<YamlAssetBundle>((ref) {
 
 final fileStoreProvider = Provider<PlatformFileStore>((ref) {
   return createAppFileStore();
+});
+
+final archiveImportServiceProvider = Provider<ArchiveImportService>((ref) {
+  return createArchiveImportService();
 });
 
 final sharedPreferencesProvider = Provider<SharedPreferences>((ref) {
@@ -73,13 +79,7 @@ final calibrationRepositoryProvider = Provider<MutableCalibrationRepository>((
 // ---------------------------------------------------------------------------
 
 final parserRegistryProvider = Provider<ParserRegistry>((ref) {
-  return ParserRegistry(<String, ScoreParser>{
-    'domiso': DoMiSoScoreParser(),
-    'json-score': const JsonScoreParser(),
-    'midi': const MidiScoreParser(),
-    'skystudio-json': const SkyStudioJsonScoreParser(),
-    'tonejs-json': ToneJsJsonScoreParser(),
-  });
+  return createDefaultParserRegistry();
 });
 
 final scoreFormatDetectorProvider = Provider<ScoreFormatDetector>((ref) {

@@ -584,13 +584,7 @@ String? _inferOutputFormatFromPath(String filePath) {
 }
 
 ParserRegistry _registry() {
-  return ParserRegistry(<String, ScoreParser>{
-    'domiso': DoMiSoScoreParser(),
-    'json-score': const JsonScoreParser(),
-    'midi': const MidiScoreParser(),
-    'skystudio-json': const SkyStudioJsonScoreParser(),
-    'tonejs-json': ToneJsJsonScoreParser(),
-  });
+  return createDefaultParserRegistry();
 }
 
 void _printUsage(ArgParser parser, [IOSink? sink]) {

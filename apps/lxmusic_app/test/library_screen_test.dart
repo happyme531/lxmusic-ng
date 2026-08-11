@@ -131,6 +131,92 @@ void main() {
     expect(find.text('empty.mid'), findsOneWidget);
     expect(find.text('乐谱中没有可播放音符'), findsOneWidget);
   });
+
+  testWidgets('conflict dialog returns rename and apply-to-remaining', (
+    tester,
+  ) async {
+    MusicImportConflictDecision? decision;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Builder(
+          builder: (context) => FilledButton(
+            onPressed: () async {
+              decision = await showDialog<MusicImportConflictDecision>(
+                context: context,
+                builder: (_) => const MusicImportConflictDialog(
+                  conflict: MusicImportConflict(
+                    fileName: 'song.dms.txt',
+                    sourceLabel: 'pack.zip / song.dms.txt',
+                    fromArchive: true,
+                  ),
+                ),
+              );
+            },
+            child: const Text('open'),
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('open'));
+    await tester.pumpAndSettle();
+    expect(find.text('覆盖'), findsOneWidget);
+    expect(find.text('跳过'), findsOneWidget);
+    expect(find.text('重命名'), findsOneWidget);
+    expect(find.text('停止'), findsOneWidget);
+
+    await tester.tap(find.text('应用到本次剩余冲突'));
+    await tester.tap(find.text('重命名'));
+    await tester.pumpAndSettle();
+
+    expect(decision?.action, MusicImportConflictAction.rename);
+    expect(decision?.applyToRemaining, isTrue);
+  });
+
+  testWidgets('progress dialog updates counters and can request stop', (
+    tester,
+  ) async {
+    final progress = ValueNotifier<MusicImportProgress>(
+      const MusicImportProgress(
+        stage: MusicImportStage.importing,
+        sourceLabel: 'pack.zip',
+        currentFileName: 'song.txt',
+        processedCount: 25,
+        totalCount: 100,
+        importedCount: 20,
+        failedCount: 2,
+        ignoredCount: 3,
+      ),
+    );
+    final stopped = ValueNotifier<bool>(false);
+    addTearDown(progress.dispose);
+    addTearDown(stopped.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: MusicImportProgressDialog(
+          progress: progress,
+          stopRequested: stopped,
+          onStop: () => stopped.value = true,
+        ),
+      ),
+    );
+
+    expect(find.text('pack.zip'), findsOneWidget);
+    expect(find.text('25 / 100'), findsOneWidget);
+    expect(find.textContaining('成功 20'), findsOneWidget);
+    expect(
+      tester
+          .widget<LinearProgressIndicator>(find.byType(LinearProgressIndicator))
+          .value,
+      0.25,
+    );
+
+    await tester.tap(find.text('停止导入'));
+    await tester.pump();
+    expect(stopped.value, isTrue);
+    expect(find.text('正在停止…'), findsOneWidget);
+  });
 }
 
 class _FakeMusicLibraryNotifier extends MusicLibraryNotifier {

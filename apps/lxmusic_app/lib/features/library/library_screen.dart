@@ -300,9 +300,17 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
 
   Future<void> _importFiles(BuildContext context, WidgetRef ref) async {
     final result = await FilePicker.pickFiles(
-      type: FileType.any,
+      type: FileType.custom,
+      allowedExtensions: <String>[
+        'mid',
+        'midi',
+        'dms',
+        'txt',
+        'json',
+        if (!kIsWeb) 'zip',
+      ],
       allowMultiple: true,
-      withData: true,
+      withData: kIsWeb,
     );
     if (result == null || result.files.isEmpty) {
       return;
@@ -321,14 +329,71 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
     if (pickedFiles.isEmpty) {
       return;
     }
-
-    final report = await ref
-        .read(musicLibraryProvider.notifier)
-        .importFiles(pickedFiles);
     if (!context.mounted) {
       return;
     }
-    if (report.failures.isNotEmpty) {
+
+    final cancellationToken = MusicImportCancellationToken();
+    final progress = ValueNotifier<MusicImportProgress>(
+      const MusicImportProgress(
+        stage: MusicImportStage.scanning,
+        sourceLabel: '正在准备导入',
+      ),
+    );
+    final stopRequested = ValueNotifier<bool>(false);
+    final progressDialog = showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => MusicImportProgressDialog(
+        progress: progress,
+        stopRequested: stopRequested,
+        onStop: () {
+          stopRequested.value = true;
+          cancellationToken.stop();
+        },
+      ),
+    );
+
+    late final MusicImportReport report;
+    try {
+      report = await ref
+          .read(musicLibraryProvider.notifier)
+          .importFiles(
+            pickedFiles,
+            cancellationToken: cancellationToken,
+            onProgress: (value) => progress.value = value,
+            resolveConflict: (conflict) =>
+                _showImportConflictDialog(context, conflict),
+          );
+    } catch (error) {
+      if (context.mounted) {
+        Navigator.of(context, rootNavigator: true).pop();
+      }
+      await progressDialog;
+      progress.dispose();
+      stopRequested.dispose();
+      if (context.mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('导入失败：$error')));
+      }
+      return;
+    }
+    if (context.mounted) {
+      Navigator.of(context, rootNavigator: true).pop();
+    }
+    await progressDialog;
+    progress.dispose();
+    stopRequested.dispose();
+    if (!context.mounted) {
+      return;
+    }
+    if (report.failures.isNotEmpty ||
+        report.archives.isNotEmpty ||
+        report.reusedCount > 0 ||
+        report.skippedCount > 0 ||
+        report.ignoredCount > 0 ||
+        report.stopped) {
       await showDialog<void>(
         context: context,
         builder: (context) => MusicImportResultDialog(report: report),
@@ -338,6 +403,21 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
     ScaffoldMessenger.of(
       context,
     ).showSnackBar(SnackBar(content: Text('成功导入 ${report.importedCount} 个文件')));
+  }
+
+  Future<MusicImportConflictDecision> _showImportConflictDialog(
+    BuildContext context,
+    MusicImportConflict conflict,
+  ) async {
+    final decision = await showDialog<MusicImportConflictDecision>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => MusicImportConflictDialog(conflict: conflict),
+    );
+    return decision ??
+        const MusicImportConflictDecision(
+          action: MusicImportConflictAction.stop,
+        );
   }
 
   Future<void> _createPlaylist(BuildContext context, WidgetRef ref) async {
@@ -716,6 +796,78 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
   }
 }
 
+class MusicImportConflictDialog extends StatefulWidget {
+  const MusicImportConflictDialog({required this.conflict, super.key});
+
+  final MusicImportConflict conflict;
+
+  @override
+  State<MusicImportConflictDialog> createState() =>
+      _MusicImportConflictDialogState();
+}
+
+class _MusicImportConflictDialogState extends State<MusicImportConflictDialog> {
+  bool _applyToRemaining = false;
+
+  void _finish(MusicImportConflictAction action) {
+    Navigator.of(context).pop(
+      MusicImportConflictDecision(
+        action: action,
+        applyToRemaining: action == MusicImportConflictAction.stop
+            ? false
+            : _applyToRemaining,
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('发现同名曲目'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Text('曲库或本次导入中已存在：${widget.conflict.fileName}'),
+          const SizedBox(height: 8),
+          Text(
+            '来源：${widget.conflict.sourceLabel}',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+          const SizedBox(height: 12),
+          CheckboxListTile(
+            contentPadding: EdgeInsets.zero,
+            value: _applyToRemaining,
+            title: const Text('应用到本次剩余冲突'),
+            controlAffinity: ListTileControlAffinity.leading,
+            onChanged: (value) {
+              setState(() => _applyToRemaining = value ?? false);
+            },
+          ),
+        ],
+      ),
+      actions: <Widget>[
+        TextButton(
+          onPressed: () => _finish(MusicImportConflictAction.stop),
+          child: const Text('停止'),
+        ),
+        TextButton(
+          onPressed: () => _finish(MusicImportConflictAction.skip),
+          child: const Text('跳过'),
+        ),
+        TextButton(
+          onPressed: () => _finish(MusicImportConflictAction.rename),
+          child: const Text('重命名'),
+        ),
+        FilledButton(
+          onPressed: () => _finish(MusicImportConflictAction.overwrite),
+          child: const Text('覆盖'),
+        ),
+      ],
+    );
+  }
+}
+
 class MusicImportResultDialog extends StatelessWidget {
   const MusicImportResultDialog({required this.report, super.key});
 
@@ -732,14 +884,47 @@ class MusicImportResultDialog extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: <Widget>[
             Text('成功 ${report.importedCount} 个，失败 ${report.failures.length} 个'),
+            if (report.overwrittenCount > 0 ||
+                report.renamedCount > 0 ||
+                report.reusedCount > 0 ||
+                report.skippedCount > 0 ||
+                report.ignoredCount > 0) ...<Widget>[
+              const SizedBox(height: 4),
+              Text(
+                '覆盖 ${report.overwrittenCount}，重命名 ${report.renamedCount}，'
+                '沿用 ${report.reusedCount}，跳过 ${report.skippedCount}，'
+                '忽略 ${report.ignoredCount}',
+              ),
+            ],
+            if (report.stopped) ...<Widget>[
+              const SizedBox(height: 8),
+              const Text('导入已停止，停止前完成的内容已保留。'),
+            ],
             const SizedBox(height: 12),
             Flexible(
               child: ListView.separated(
                 shrinkWrap: true,
-                itemCount: report.failures.length,
+                itemCount: report.archives.length + report.failures.length,
                 separatorBuilder: (_, _) => const Divider(height: 16),
                 itemBuilder: (context, index) {
-                  final failure = report.failures[index];
+                  if (index < report.archives.length) {
+                    final archive = report.archives[index];
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: <Widget>[
+                        Text(
+                          archive.playlistName,
+                          style: Theme.of(context).textTheme.titleSmall,
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          '${archive.archiveFileName} · ${archive.memberCount} 首',
+                        ),
+                      ],
+                    );
+                  }
+                  final failure =
+                      report.failures[index - report.archives.length];
                   return Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: <Widget>[
@@ -763,6 +948,73 @@ class MusicImportResultDialog extends StatelessWidget {
           child: const Text('确定'),
         ),
       ],
+    );
+  }
+}
+
+class MusicImportProgressDialog extends StatelessWidget {
+  const MusicImportProgressDialog({
+    required this.progress,
+    required this.stopRequested,
+    required this.onStop,
+    super.key,
+  });
+
+  final ValueListenable<MusicImportProgress> progress;
+  final ValueListenable<bool> stopRequested;
+  final VoidCallback onStop;
+
+  @override
+  Widget build(BuildContext context) {
+    return PopScope(
+      canPop: false,
+      child: AlertDialog(
+        title: const Text('正在导入曲目'),
+        content: SizedBox(
+          width: 420,
+          child: ValueListenableBuilder<MusicImportProgress>(
+            valueListenable: progress,
+            builder: (context, value, _) => Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                LinearProgressIndicator(value: value.fraction),
+                const SizedBox(height: 16),
+                Text(value.sourceLabel),
+                if (value.currentFileName case final current?) ...<Widget>[
+                  const SizedBox(height: 4),
+                  Text(
+                    current,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ],
+                if (value.totalCount > 0) ...<Widget>[
+                  const SizedBox(height: 8),
+                  Text('${value.processedCount} / ${value.totalCount}'),
+                ],
+                const SizedBox(height: 4),
+                Text(
+                  '成功 ${value.importedCount} · 沿用 ${value.reusedCount} · '
+                  '跳过 ${value.skippedCount} · 失败 ${value.failedCount} · '
+                  '忽略 ${value.ignoredCount}',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ],
+            ),
+          ),
+        ),
+        actions: <Widget>[
+          ValueListenableBuilder<bool>(
+            valueListenable: stopRequested,
+            builder: (context, stopped, _) => TextButton(
+              onPressed: stopped ? null : onStop,
+              child: Text(stopped ? '正在停止…' : '停止导入'),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
