@@ -1,3 +1,5 @@
+import 'dart:developer' as developer;
+
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -13,6 +15,13 @@ import 'providers/library_selection_provider.dart';
 import 'providers/music_library_provider.dart';
 import 'services/song_export_service.dart';
 import 'widgets/music_file_tile.dart';
+
+void _logPlaylistCreate(String message) {
+  developer.log(
+    '[PLAYLIST_CREATE] $message',
+    name: 'lxmusic.library.playlist_create',
+  );
+}
 
 Future<void> runMusicImportFlow(
   BuildContext context,
@@ -428,21 +437,37 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
   }
 
   Future<void> _createPlaylist(BuildContext context, WidgetRef ref) async {
+    final watch = Stopwatch()..start();
+    void logPhase(String phase, [String details = '']) {
+      _logPlaylistCreate(
+        'phase=$phase elapsed_ms=${watch.elapsedMilliseconds} '
+        'scheduler=${WidgetsBinding.instance.schedulerPhase.name} '
+        'mounted=${context.mounted}'
+        '${details.isEmpty ? '' : ' $details'}',
+      );
+    }
+
     final messenger = ScaffoldMessenger.of(context);
+    logPhase('dialog_start');
     final name = await _showPlaylistNameDialog(
       context,
       title: '新建歌单',
       confirmLabel: '创建',
     );
+    logPhase('dialog_done', 'accepted=${name != null}');
     if (!context.mounted || name == null) {
+      logPhase('cancelled');
       return;
     }
+    logPhase('provider_start');
     final created = await ref
         .read(musicLibraryProvider.notifier)
         .createPlaylist(name);
+    logPhase('provider_done', 'created=$created');
     messenger.showSnackBar(
       SnackBar(content: Text(created ? '歌单已创建' : '歌单创建失败，名称可能重复')),
     );
+    logPhase('snackbar_shown');
   }
 
   Future<void> _showPlaylistActions(
@@ -539,30 +564,27 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
     required String confirmLabel,
     String initialValue = '',
   }) async {
-    final controller = TextEditingController(text: initialValue);
+    final watch = Stopwatch()..start();
+    void logPhase(String phase, [String details = '']) {
+      _logPlaylistCreate(
+        'phase=name_dialog_$phase title=$title '
+        'elapsed_ms=${watch.elapsedMilliseconds} '
+        'scheduler=${WidgetsBinding.instance.schedulerPhase.name} '
+        'mounted=${context.mounted}'
+        '${details.isEmpty ? '' : ' $details'}',
+      );
+    }
+
+    logPhase('show_start');
     final result = await showDialog<String>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: Text(title),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          decoration: const InputDecoration(hintText: '输入歌单名称'),
-          onSubmitted: (_) => Navigator.of(context).pop(controller.text.trim()),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(context).pop(controller.text.trim()),
-            child: Text(confirmLabel),
-          ),
-        ],
+      builder: (context) => _PlaylistNameDialog(
+        title: title,
+        confirmLabel: confirmLabel,
+        initialValue: initialValue,
       ),
     );
-    controller.dispose();
+    logPhase('show_done', 'has_result=${result != null}');
     final trimmed = result?.trim();
     return trimmed == null || trimmed.isEmpty ? null : trimmed;
   }
@@ -1029,6 +1051,81 @@ class MusicImportProgressDialog extends StatelessWidget {
 enum _PlaylistAction { rename, delete }
 
 enum _BatchAction { addToPlaylist, removeFromCurrentPlaylist, export, delete }
+
+class _PlaylistNameDialog extends StatefulWidget {
+  const _PlaylistNameDialog({
+    required this.title,
+    required this.confirmLabel,
+    required this.initialValue,
+  });
+
+  final String title;
+  final String confirmLabel;
+  final String initialValue;
+
+  @override
+  State<_PlaylistNameDialog> createState() => _PlaylistNameDialogState();
+}
+
+class _PlaylistNameDialogState extends State<_PlaylistNameDialog> {
+  late final TextEditingController _controller;
+  final Stopwatch _watch = Stopwatch()..start();
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController(text: widget.initialValue);
+    _logPhase('controller_create');
+  }
+
+  @override
+  void dispose() {
+    _logPhase('controller_dispose_start');
+    _controller.dispose();
+    _logPhase('controller_dispose_done');
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text(widget.title),
+      content: TextField(
+        controller: _controller,
+        autofocus: true,
+        decoration: const InputDecoration(hintText: '输入歌单名称'),
+        onSubmitted: (_) => _finish('submit'),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () {
+            _logPhase('cancel_tap');
+            Navigator.of(context).pop();
+          },
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          onPressed: () => _finish('confirm_tap'),
+          child: Text(widget.confirmLabel),
+        ),
+      ],
+    );
+  }
+
+  void _finish(String phase) {
+    _logPhase(phase);
+    Navigator.of(context).pop(_controller.text.trim());
+  }
+
+  void _logPhase(String phase) {
+    _logPlaylistCreate(
+      'phase=name_dialog_$phase title=${widget.title} '
+      'elapsed_ms=${_watch.elapsedMilliseconds} '
+      'scheduler=${WidgetsBinding.instance.schedulerPhase.name} '
+      'mounted=$mounted',
+    );
+  }
+}
 
 class _EmptyState extends StatelessWidget {
   const _EmptyState({
