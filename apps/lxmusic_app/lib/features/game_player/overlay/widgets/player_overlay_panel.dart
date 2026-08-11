@@ -5,6 +5,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:lxmusic_core/lxmusic_core.dart';
 
+import '../../../calibration/calibration_launcher.dart';
+import '../../../calibration/platform/calibration_platform.dart';
+import '../../../calibration/providers/calibration_provider.dart';
 import '../../../workbench/providers/workbench_provider.dart';
 import '../../../workbench/widgets/current_target_action.dart';
 import '../../models/game_player_snapshot.dart';
@@ -47,6 +50,7 @@ class _PlayerOverlayPanelState extends State<PlayerOverlayPanel> {
   String _profileLabel = '未选择键位';
   String _playbackStatus = 'idle';
   String? _playbackError;
+  String? _lastPresentedPlaybackError;
   int _positionMs = 0;
   int _durationMs = 1;
   bool _isPlaying = false;
@@ -82,6 +86,9 @@ class _PlayerOverlayPanelState extends State<PlayerOverlayPanel> {
     super.initState();
     widget.bridge.setSessionHandler(_applySession);
     unawaited(_loadInitialSession(++_sessionGeneration));
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) unawaited(_consumePendingCalibrationResult());
+    });
     _ticker = Timer.periodic(const Duration(milliseconds: 250), (_) => _tick());
   }
 
@@ -361,60 +368,63 @@ class _PlayerOverlayPanelState extends State<PlayerOverlayPanel> {
   }
 
   Widget _buildPerformanceOverview() {
-    return Column(
-      children: [
-        SizedBox(
-          height: 36,
-          child: _KeyConfigRow(
-            profileLabel: _profileLabel,
-            calibrationLabel: '重校',
-            calibrationEnabled: !_startingCalibration,
-            onSwitch: () => unawaited(_openTargetPicker()),
-            onCalibrate: () => unawaited(_recalibrateCurrentTarget()),
+    return Consumer(
+      builder: (context, ref, _) => Column(
+        children: [
+          SizedBox(
+            height: 36,
+            child: _KeyConfigRow(
+              profileLabel: _profileLabel,
+              calibrationLabel: '重校',
+              calibrationEnabled: !_startingCalibration,
+              onSwitch: () => unawaited(_openTargetPicker()),
+              onCalibrate: () => unawaited(_recalibrateCurrentTarget(ref)),
+            ),
           ),
-        ),
-        const SizedBox(height: 4),
-        SizedBox(
-          height: 36,
-          child: _PerformanceModeSelector(onUnavailable: _showComingSoon),
-        ),
-        const SizedBox(height: 4),
-        Expanded(
-          child: Row(
-            children: [
-              Expanded(
-                child: _QuickAction(
-                  data: _QuickActionData(
-                    key: 'octave',
-                    icon: Icons.swap_vert_rounded,
-                    title: '音域调整',
-                    value: _octaveLabel,
-                    active: _transpose != 0,
-                    onPressed: () => setState(
-                      () => _performanceEditor = _PerformanceEditor.octave,
+          const SizedBox(height: 4),
+          SizedBox(
+            height: 36,
+            child: _PerformanceModeSelector(onUnavailable: _showComingSoon),
+          ),
+          const SizedBox(height: 4),
+          Expanded(
+            child: Row(
+              children: [
+                Expanded(
+                  child: _QuickAction(
+                    data: _QuickActionData(
+                      key: 'octave',
+                      icon: Icons.swap_vert_rounded,
+                      title: '音域调整',
+                      value: _octaveLabel,
+                      active: _transpose != 0,
+                      onPressed: () => setState(
+                        () => _performanceEditor = _PerformanceEditor.octave,
+                      ),
                     ),
                   ),
                 ),
-              ),
-              const SizedBox(width: 6),
-              Expanded(
-                child: _QuickAction(
-                  data: _QuickActionData(
-                    key: 'duration-mode',
-                    icon: Icons.touch_app_rounded,
-                    title: '时长模式',
-                    value: _durationModeLabel,
-                    active: _durationMode != GamePlayerDurationMode.shortPress,
-                    onPressed: () => setState(
-                      () => _performanceEditor = _PerformanceEditor.duration,
+                const SizedBox(width: 6),
+                Expanded(
+                  child: _QuickAction(
+                    data: _QuickActionData(
+                      key: 'duration-mode',
+                      icon: Icons.touch_app_rounded,
+                      title: '时长模式',
+                      value: _durationModeLabel,
+                      active:
+                          _durationMode != GamePlayerDurationMode.shortPress,
+                      onPressed: () => setState(
+                        () => _performanceEditor = _PerformanceEditor.duration,
+                      ),
                     ),
                   ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 
@@ -985,10 +995,73 @@ class _PlayerOverlayPanelState extends State<PlayerOverlayPanel> {
   }
 
   String get _currentSubtitle {
-    final error = _playbackError?.trim();
-    if (error != null && error.isNotEmpty) return error;
     if (_playbackStatus == 'preparing') return '正在准备演奏计划…';
     return _profileLabel;
+  }
+
+  Future<void> _consumePendingCalibrationResult() async {
+    try {
+      final container = ProviderScope.containerOf(context, listen: false);
+      final managerState = await container.read(
+        calibrationManagerProvider.future,
+      );
+      if (!mounted || managerState.lastResult == null) return;
+      final result = managerState.lastResult!;
+      final message = switch (result.status) {
+        CalibrationSessionStatus.saved => '键位校准已保存，可以直接开始演奏。',
+        CalibrationSessionStatus.cancelled => '键位校准已取消。',
+        CalibrationSessionStatus.error =>
+          result.message ?? '键位校准失败：${result.errorCode ?? 'unknown'}',
+        CalibrationSessionStatus.started => null,
+      };
+      if (message != null) {
+        _showOverlayMessage(
+          message,
+          isError: result.status == CalibrationSessionStatus.error,
+        );
+      }
+    } on Object catch (error) {
+      if (mounted) _showOverlayMessage('读取键位校准结果失败：$error', isError: true);
+    }
+  }
+
+  void _presentPlaybackError(String? message) {
+    final normalized = message?.trim();
+    if (normalized == null || normalized.isEmpty) {
+      _lastPresentedPlaybackError = null;
+      return;
+    }
+    if (_lastPresentedPlaybackError == normalized) return;
+    _lastPresentedPlaybackError = normalized;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _lastPresentedPlaybackError == normalized) {
+        _showOverlayMessage(normalized, isError: true);
+      }
+    });
+  }
+
+  void _showOverlayMessage(String message, {bool isError = false}) {
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    if (messenger == null) return;
+    messenger
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          behavior: SnackBarBehavior.floating,
+          duration: const Duration(milliseconds: 2400),
+          margin: const EdgeInsets.fromLTRB(8, 0, 8, 7),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          backgroundColor: isError
+              ? const Color(0xF2A63C48)
+              : const Color(0xF235675E),
+          content: Text(
+            message,
+            maxLines: 3,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontSize: 11),
+          ),
+        ),
+      );
   }
 
   double get _progress {
@@ -1076,6 +1149,7 @@ class _PlayerOverlayPanelState extends State<PlayerOverlayPanel> {
         _profileLabel = profile == null || profile.isEmpty ? '未选择键位' : profile;
         _lastTick = DateTime.now();
       });
+      _presentPlaybackError(snapshot.playbackError);
       return;
     }
     setState(() {
@@ -1217,6 +1291,9 @@ class _PlayerOverlayPanelState extends State<PlayerOverlayPanel> {
       }
       _lastTick = DateTime.now();
     });
+    if (session.containsKey('playbackError')) {
+      _presentPlaybackError(_playbackError);
+    }
   }
 
   void _tick() {
@@ -1238,6 +1315,7 @@ class _PlayerOverlayPanelState extends State<PlayerOverlayPanel> {
       _playbackError = null;
       _lastTick = DateTime.now();
     });
+    _presentPlaybackError(null);
     _sendAction('togglePlayback');
   }
 
@@ -1402,6 +1480,7 @@ class _PlayerOverlayPanelState extends State<PlayerOverlayPanel> {
         _playbackStatus = 'error';
         _playbackError = error.toString();
       });
+      _presentPlaybackError(_playbackError);
       if (rethrowError) rethrow;
       return const <String, Object?>{};
     }
@@ -1472,15 +1551,23 @@ class _PlayerOverlayPanelState extends State<PlayerOverlayPanel> {
     GamePlayerDurationMode.longPress => '长按',
   };
 
-  Future<void> _recalibrateCurrentTarget() async {
+  Future<void> _recalibrateCurrentTarget(WidgetRef ref) async {
     if (_startingCalibration) return;
+    final profile = ref.read(selectedProfileProvider);
+    final layout = ref.read(selectedLayoutProvider);
+    if (profile == null || layout == null) return;
     setState(() => _startingCalibration = true);
-    final commandId = ++_nextCommandId;
-    await _dispatchAction(
-      'calibrationStartCurrentTarget',
-      const <String, Object?>{},
-      commandId,
+    final result = await launchCalibration(
+      context: context,
+      ref: ref,
+      profile: profile,
+      layout: layout,
+      launchOrigin: CalibrationLaunchOrigin.playerOverlay,
     );
+    if (!mounted) return;
+    if (result?.status == CalibrationSessionStatus.started) {
+      await _setPanelState(PlayerOverlayPanelState.compact);
+    }
     if (mounted) setState(() => _startingCalibration = false);
   }
 

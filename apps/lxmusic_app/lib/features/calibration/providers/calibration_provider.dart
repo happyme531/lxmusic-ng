@@ -1,3 +1,5 @@
+import 'dart:developer' as developer;
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:lxmusic_core/lxmusic_core.dart';
 
@@ -37,6 +39,18 @@ final calibrationManagerProvider =
       CalibrationManager.new,
     );
 
+final calibrationRevisionProvider =
+    NotifierProvider<CalibrationRevisionNotifier, int>(
+      CalibrationRevisionNotifier.new,
+    );
+
+class CalibrationRevisionNotifier extends Notifier<int> {
+  @override
+  int build() => 0;
+
+  void bump() => state += 1;
+}
+
 class CalibrationManager extends AsyncNotifier<CalibrationManagerState> {
   @override
   Future<CalibrationManagerState> build() => _load(consumePending: true);
@@ -59,8 +73,25 @@ class CalibrationManager extends AsyncNotifier<CalibrationManagerState> {
     String? targetPackageName,
     CalibrationLaunchOrigin launchOrigin = CalibrationLaunchOrigin.mainApp,
   }) async {
+    final watch = Stopwatch()..start();
+    void logPhase(String phase, [String details = '']) {
+      developer.log(
+        '[CALIBRATION_FLOW] phase=manager_$phase origin=${launchOrigin.name} '
+        'profile=${profile.id} layout=${layout.id} '
+        'elapsed_ms=${watch.elapsedMilliseconds}'
+        '${details.isEmpty ? '' : ' $details'}',
+        name: 'lxmusic.calibration.flow',
+      );
+    }
+
     final platform = ref.read(calibrationPlatformProvider);
+    logPhase('get_state_start');
     final platformState = await platform.getState();
+    logPhase(
+      'get_state_done',
+      'supported=${platformState.canCalibrate} '
+          'accessibility=${platformState.accessibilityEnabled}',
+    );
     if (!platformState.canCalibrate) {
       return const CalibrationSessionResult(
         status: CalibrationSessionStatus.error,
@@ -85,6 +116,7 @@ class CalibrationManager extends AsyncNotifier<CalibrationManagerState> {
           ),
         );
     final layoutBinding = profile.layoutById(layout.id);
+    logPhase('platform_start_start', 'target=${targetPackageName ?? 'manual'}');
     final result = await platform.startSession(
       CalibrationSessionRequest(
         sessionId: DateTime.now().microsecondsSinceEpoch.toString(),
@@ -99,9 +131,14 @@ class CalibrationManager extends AsyncNotifier<CalibrationManagerState> {
         previousCalibration: previous,
       ),
     );
+    logPhase(
+      'platform_start_done',
+      'status=${result.status.name} error_code=${result.errorCode}',
+    );
     state = AsyncData(
       CalibrationManagerState(platform: platformState, lastResult: result),
     );
+    logPhase('state_published');
     return result;
   }
 
@@ -113,13 +150,30 @@ class CalibrationManager extends AsyncNotifier<CalibrationManagerState> {
     final platform = ref.read(calibrationPlatformProvider);
     CalibrationSessionResult? pending;
     if (consumePending) {
+      developer.log(
+        '[CALIBRATION_FLOW] phase=consume_pending_start',
+        name: 'lxmusic.calibration.flow',
+      );
       pending = await platform.consumePendingResult();
+      developer.log(
+        '[CALIBRATION_FLOW] phase=consume_pending_done '
+        'status=${pending?.status.name} has_calibration=${pending?.calibration != null}',
+        name: 'lxmusic.calibration.flow',
+      );
       if (pending?.status == CalibrationSessionStatus.saved &&
           pending?.calibration != null) {
         await ref
             .read(calibrationRepositoryProvider)
             .save(pending!.calibration!);
         ref.invalidate(calibrationStatusProvider);
+        ref.read(calibrationRevisionProvider.notifier).bump();
+        developer.log(
+          '[CALIBRATION_FLOW] phase=consume_pending_saved '
+          'profile=${pending.calibration!.key.profileId} '
+          'layout=${pending.calibration!.key.layoutId} '
+          'device=${pending.calibration!.key.deviceId}',
+          name: 'lxmusic.calibration.flow',
+        );
       }
     }
     return CalibrationManagerState(

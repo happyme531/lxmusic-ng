@@ -511,12 +511,10 @@ void _saveLayoutId(Ref ref, String? layoutId) {
 }
 
 void markProfileUsedNow(WidgetRef ref, String profileId) {
+  final persistence = ref.read(targetSelectionPersistenceProvider);
+  final usageNotifier = ref.read(persistedProfileUsageProvider.notifier);
   unawaited(() async {
-    final timestamp = await ref
-        .read(targetSelectionPersistenceProvider)
-        .markProfileUsedNow(profileId);
-    ref
-        .read(persistedProfileUsageProvider.notifier)
-        .markUsed(profileId, timestamp);
+    final timestamp = await persistence.markProfileUsedNow(profileId);
+    usageNotifier.markUsed(profileId, timestamp);
   }());
 }

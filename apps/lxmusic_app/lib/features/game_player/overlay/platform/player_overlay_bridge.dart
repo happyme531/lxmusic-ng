@@ -1,3 +1,5 @@
+import 'dart:developer' as developer;
+
 import 'package:flutter/services.dart';
 
 import '../models/player_overlay_state.dart';
@@ -35,6 +37,7 @@ class MethodChannelPlayerOverlayBridge implements PlayerOverlayBridge {
 
   final MethodChannel channel;
   PlayerOverlaySessionHandler? _sessionHandler;
+  int _actionTraceId = 0;
 
   @override
   Future<Map<String, Object?>> loadInitialSession() async {
@@ -93,11 +96,36 @@ class MethodChannelPlayerOverlayBridge implements PlayerOverlayBridge {
 
   @override
   Future<Map<String, Object?>> sendAction(Map<String, Object?> action) async {
-    final result = await channel.invokeMapMethod<Object?, Object?>(
-      'playerAction',
-      action,
+    final traceId = ++_actionTraceId;
+    final type = action['type'] ?? 'unknown';
+    final commandId = action['commandId'];
+    final watch = Stopwatch()..start();
+    _logAction(
+      'side=overlay phase=send_start trace=$traceId type=$type '
+      'command_id=$commandId',
     );
-    return _stringKeyed(result);
+    try {
+      final result = await channel.invokeMapMethod<Object?, Object?>(
+        'playerAction',
+        action,
+      );
+      final mapped = _stringKeyed(result);
+      _logAction(
+        'side=overlay phase=send_done trace=$traceId type=$type '
+        'command_id=$commandId elapsed_ms=${watch.elapsedMilliseconds} '
+        'status=${mapped['status']} keys=${mapped.keys.join(',')}',
+      );
+      return mapped;
+    } catch (error, stackTrace) {
+      _logAction(
+        'side=overlay phase=send_error trace=$traceId type=$type '
+        'command_id=$commandId elapsed_ms=${watch.elapsedMilliseconds} '
+        'error=$error',
+        error: error,
+        stackTrace: stackTrace,
+      );
+      rethrow;
+    }
   }
 
   @override
@@ -114,5 +142,18 @@ class MethodChannelPlayerOverlayBridge implements PlayerOverlayBridge {
     return <String, Object?>{
       for (final entry in source.entries) entry.key.toString(): entry.value,
     };
+  }
+
+  static void _logAction(
+    String message, {
+    Object? error,
+    StackTrace? stackTrace,
+  }) {
+    developer.log(
+      '[OVERLAY_ACTION] $message',
+      name: 'lxmusic.overlay.action',
+      error: error,
+      stackTrace: stackTrace,
+    );
   }
 }

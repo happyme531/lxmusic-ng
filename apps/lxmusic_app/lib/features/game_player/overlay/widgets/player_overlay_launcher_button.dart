@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:developer' as developer;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -135,6 +136,35 @@ class _PlayerOverlayLauncherButtonState
   Future<Map<String, Object?>> _handleOverlayAction(
     Map<String, Object?> action,
   ) async {
+    final type = action['type'] ?? 'unknown';
+    final commandId = action['commandId'];
+    final watch = Stopwatch()..start();
+    _logOverlayAction(
+      'side=main phase=receive type=$type command_id=$commandId '
+      'deadline=${action['deadlineUnixMs']}',
+    );
+    try {
+      final result = await _dispatchOverlayAction(action);
+      _logOverlayAction(
+        'side=main phase=reply type=$type command_id=$commandId '
+        'elapsed_ms=${watch.elapsedMilliseconds} status=${result['status']} '
+        'keys=${result.keys.join(',')}',
+      );
+      return result;
+    } catch (error, stackTrace) {
+      _logOverlayAction(
+        'side=main phase=error type=$type command_id=$commandId '
+        'elapsed_ms=${watch.elapsedMilliseconds} error=$error',
+        error: error,
+        stackTrace: stackTrace,
+      );
+      rethrow;
+    }
+  }
+
+  Future<Map<String, Object?>> _dispatchOverlayAction(
+    Map<String, Object?> action,
+  ) async {
     final deadlineUnixMs = (action['deadlineUnixMs'] as num?)?.toInt();
     if (deadlineUnixMs != null &&
         DateTime.now().millisecondsSinceEpoch > deadlineUnixMs) {
@@ -165,12 +195,21 @@ class _PlayerOverlayLauncherButtonState
         if (profile == null || layout == null) {
           throw StateError('请先选择游戏、乐器和键位布局。');
         }
+        _logOverlayAction(
+          'side=main phase=calibration_launch_start '
+          'profile=${profile.id} layout=${layout.id}',
+        );
         final result = await launchCalibration(
           context: context,
           ref: ref,
           profile: profile,
           layout: layout,
           launchOrigin: CalibrationLaunchOrigin.playerOverlay,
+        );
+        _logOverlayAction(
+          'side=main phase=calibration_launch_done '
+          'profile=${profile.id} layout=${layout.id} '
+          'status=${result?.status.name}',
         );
         return result?.toMap() ??
             const <String, Object?>{'status': 'cancelled'};
@@ -187,6 +226,11 @@ class _PlayerOverlayLauncherButtonState
         }
         final requestedPackage = (action['targetPackageName'] as String?)
             ?.trim();
+        _logOverlayAction(
+          'side=main phase=calibration_session_start '
+          'profile=$profileId layout=$layoutId '
+          'target=${requestedPackage ?? 'manual'}',
+        );
         final result = await ref
             .read(calibrationManagerProvider.notifier)
             .startSession(
@@ -198,6 +242,11 @@ class _PlayerOverlayLauncherButtonState
                   ? null
                   : requestedPackage,
             );
+        _logOverlayAction(
+          'side=main phase=calibration_session_done '
+          'profile=$profileId layout=$layoutId status=${result.status.name} '
+          'error_code=${result.errorCode}',
+        );
         return result.toMap();
       case 'calibrationCancelSession':
         await ref.read(calibrationPlatformProvider).cancelSession();
@@ -211,10 +260,32 @@ class _PlayerOverlayLauncherButtonState
           if (result != null) ...result.toMap(),
         };
       default:
-        return ref
+        _logOverlayAction(
+          'side=main phase=player_action_start type=${action['type']} '
+          'command_id=${action['commandId']}',
+        );
+        final result = await ref
             .read(gamePlayerProvider.notifier)
             .handleOverlayAction(action);
+        _logOverlayAction(
+          'side=main phase=player_action_done type=${action['type']} '
+          'command_id=${action['commandId']}',
+        );
+        return result;
     }
+  }
+
+  static void _logOverlayAction(
+    String message, {
+    Object? error,
+    StackTrace? stackTrace,
+  }) {
+    developer.log(
+      '[OVERLAY_ACTION] $message',
+      name: 'lxmusic.overlay.action',
+      error: error,
+      stackTrace: stackTrace,
+    );
   }
 
   Future<bool?> _confirmAccessibilityPermission() {

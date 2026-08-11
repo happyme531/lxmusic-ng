@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:developer' as developer;
 import 'dart:math';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -7,6 +8,7 @@ import 'package:lxmusic_core/lxmusic_core.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../../core/service_locator.dart';
+import '../../calibration/providers/calibration_provider.dart';
 import '../../library/models/music_file.dart';
 import '../../library/providers/music_library_provider.dart';
 import '../../workbench/providers/workbench_provider.dart';
@@ -52,6 +54,7 @@ class GamePlayerController extends Notifier<GamePlayerSnapshot> {
   GamePlayerDurationMode _durationMode = GamePlayerDurationMode.shortPress;
   String _playbackStatus = 'idle';
   String? _playbackError;
+  int? _calibrationRevision;
 
   @override
   GamePlayerSnapshot build() {
@@ -61,6 +64,13 @@ class GamePlayerController extends Notifier<GamePlayerSnapshot> {
     final profile = ref.watch(selectedProfileProvider);
     final variant = ref.watch(selectedVariantProvider);
     final layout = ref.watch(selectedLayoutProvider);
+    final calibrationRevision = ref.watch(calibrationRevisionProvider);
+
+    if (_calibrationRevision != null &&
+        _calibrationRevision != calibrationRevision) {
+      _invalidatePreparedPlan();
+    }
+    _calibrationRevision = calibrationRevision;
 
     final AccessibilityPlaybackPlatform platform =
         _playbackPlatform ?? ref.read(accessibilityPlaybackPlatformProvider);
@@ -117,7 +127,17 @@ class GamePlayerController extends Notifier<GamePlayerSnapshot> {
   Future<Map<String, Object?>> handleOverlayAction(
     Map<String, Object?> action,
   ) async {
+    final actionType = action['type'] ?? 'unknown';
+    final commandId = action['commandId'];
+    final watch = Stopwatch()..start();
+    _logPlayerAction(
+      'phase=controller_enter type=$actionType command_id=$commandId',
+    );
     await _loadFuture;
+    _logPlayerAction(
+      'phase=state_loaded type=$actionType command_id=$commandId '
+      'elapsed_ms=${watch.elapsedMilliseconds}',
+    );
     _syncClock();
     final deadlineUnixMs = (action['deadlineUnixMs'] as num?)?.toInt();
     if (_deadlineExpired(deadlineUnixMs)) {
@@ -217,10 +237,27 @@ class GamePlayerController extends Notifier<GamePlayerSnapshot> {
         }
       case 'prepareTargetSelection':
         if (_hasActiveOrPendingExecution) {
+          _logPlayerAction(
+            'phase=target_prepare_pause_start command_id=$commandId '
+            'status=$_playbackStatus',
+          );
           await _pauseExecution();
+          _logPlayerAction(
+            'phase=target_prepare_pause_done command_id=$commandId '
+            'elapsed_ms=${watch.elapsedMilliseconds}',
+          );
         }
       case 'selectTarget':
+        _logPlayerAction(
+          'phase=target_select_start command_id=$commandId '
+          'profile=${action['profileId']} variant=${action['variantId']} '
+          'layout=${action['layoutId']}',
+        );
         await _selectTarget(action);
+        _logPlayerAction(
+          'phase=target_select_done command_id=$commandId '
+          'elapsed_ms=${watch.elapsedMilliseconds}',
+        );
       case 'cyclePlaybackMode':
         _playbackModeIndex = (_playbackModeIndex + 1) % 4;
       case 'selectPlaylist':
@@ -246,6 +283,10 @@ class GamePlayerController extends Notifier<GamePlayerSnapshot> {
     }
     _publish();
     unawaited(_persist());
+    _logPlayerAction(
+      'phase=controller_reply type=$actionType command_id=$commandId '
+      'elapsed_ms=${watch.elapsedMilliseconds}',
+    );
     return state.toOverlayActionMap();
   }
 
@@ -866,6 +907,13 @@ class GamePlayerController extends Notifier<GamePlayerSnapshot> {
       }),
     );
   }
+}
+
+void _logPlayerAction(String message) {
+  developer.log(
+    '[OVERLAY_ACTION] side=main $message',
+    name: 'lxmusic.overlay.action',
+  );
 }
 
 class _GamePlayerCatalog {

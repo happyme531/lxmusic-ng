@@ -1,3 +1,5 @@
+import 'dart:developer' as developer;
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:lxmusic_core/lxmusic_core.dart';
@@ -15,10 +17,26 @@ Future<CalibrationSessionResult?> launchCalibration({
 }) async {
   final messenger = ScaffoldMessenger.of(context);
   final manager = ref.read(calibrationManagerProvider.notifier);
+  final watch = Stopwatch()..start();
+  void logPhase(String phase, [String details = '']) {
+    _logCalibrationLaunch(
+      'phase=$phase origin=${launchOrigin.name} profile=${profile.id} '
+      'layout=${layout.id} elapsed_ms=${watch.elapsedMilliseconds}'
+      '${details.isEmpty ? '' : ' $details'}',
+    );
+  }
 
   try {
+    logPhase('start');
+    logPhase('get_state_start');
     final platform = await ref.read(calibrationPlatformProvider).getState();
+    logPhase(
+      'get_state_done',
+      'supported=${platform.canCalibrate} '
+          'accessibility=${platform.accessibilityEnabled}',
+    );
     if (!context.mounted) {
+      logPhase('context_unmounted_after_state');
       return null;
     }
     if (!platform.canCalibrate) {
@@ -28,6 +46,7 @@ Future<CalibrationSessionResult?> launchCalibration({
       return null;
     }
     if (!platform.accessibilityEnabled) {
+      logPhase('accessibility_dialog_start');
       final openSettings = await showDialog<bool>(
         context: context,
         builder: (dialogContext) => AlertDialog(
@@ -47,20 +66,27 @@ Future<CalibrationSessionResult?> launchCalibration({
           ],
         ),
       );
+      logPhase('accessibility_dialog_done', 'open_settings=$openSettings');
       if (openSettings == true) {
+        logPhase('open_accessibility_settings_start');
         await manager.openAccessibilitySettings();
+        logPhase('open_accessibility_settings_done');
       }
       return null;
     }
 
+    logPhase('find_targets_start');
     final targets = await manager.findTargets(profile);
+    logPhase('find_targets_done', 'count=${targets.length}');
     if (!context.mounted) {
+      logPhase('context_unmounted_after_targets');
       return null;
     }
     String? targetPackageName;
     if (targets.length == 1) {
       targetPackageName = targets.single.packageName;
     } else if (targets.length > 1) {
+      logPhase('target_dialog_start', 'count=${targets.length}');
       final selected = await showDialog<String>(
         context: context,
         builder: (dialogContext) => SimpleDialog(
@@ -84,17 +110,23 @@ Future<CalibrationSessionResult?> launchCalibration({
           ],
         ),
       );
+      logPhase('target_dialog_done', 'selected=${selected ?? 'cancelled'}');
       if (selected == null) {
         return null;
       }
       targetPackageName = selected.isEmpty ? null : selected;
     }
 
+    logPhase('start_session_start', 'target=${targetPackageName ?? 'manual'}');
     final result = await manager.startSession(
       profile: profile,
       layout: layout,
       launchOrigin: launchOrigin,
       targetPackageName: targetPackageName,
+    );
+    logPhase(
+      'start_session_done',
+      'status=${result.status.name} error_code=${result.errorCode}',
     );
     if (!context.mounted) {
       return result;
@@ -108,11 +140,32 @@ Future<CalibrationSessionResult?> launchCalibration({
         result.message ?? '无法开始校准：${result.errorCode ?? 'unknown'}',
     };
     messenger.showSnackBar(SnackBar(content: Text(message)));
+    logPhase('done', 'status=${result.status.name}');
     return result;
-  } on Object catch (error) {
+  } on Object catch (error, stackTrace) {
+    _logCalibrationLaunch(
+      'phase=error origin=${launchOrigin.name} profile=${profile.id} '
+      'layout=${layout.id} elapsed_ms=${watch.elapsedMilliseconds} '
+      'error=$error',
+      error: error,
+      stackTrace: stackTrace,
+    );
     if (context.mounted) {
       messenger.showSnackBar(SnackBar(content: Text('无法开始校准：$error')));
     }
     return null;
   }
+}
+
+void _logCalibrationLaunch(
+  String message, {
+  Object? error,
+  StackTrace? stackTrace,
+}) {
+  developer.log(
+    '[CALIBRATION_FLOW] $message',
+    name: 'lxmusic.calibration.flow',
+    error: error,
+    stackTrace: stackTrace,
+  );
 }
