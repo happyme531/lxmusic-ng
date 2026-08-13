@@ -2,5 +2,6 @@
 <resources>
     <string name="app_name">新·留香音乐盒</string>
     <string name="open_music_file">导入音乐</string>
-    <string name="calibration_accessibility_description">在目标游戏上方显示播放器和键位校准控件。当前版本的播放器界面尚未执行自动演奏。</string>
+    <string name="accessibility_service_label">游戏内演奏与键位校准</string>
+    <string name="accessibility_service_description">用于在目标游戏上方显示悬浮播放器、校准键位，并通过模拟触摸执行自动演奏。本服务不会读取窗口内容。</string>
 </resources>

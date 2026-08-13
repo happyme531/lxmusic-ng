@@ -4,6 +4,6 @@
     android:accessibilityFeedbackType="feedbackGeneric"
     android:canPerformGestures="true"
     android:canRetrieveWindowContent="false"
-    android:description="@string/calibration_accessibility_description"
+    android:description="@string/accessibility_service_description"
     android:notificationTimeout="20"
     android:settingsActivity="dev.happyme531.clxmidiplayer.ng.MainActivity" />
