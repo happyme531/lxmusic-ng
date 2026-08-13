@@ -10,6 +10,7 @@ import '../features/library/library_screen.dart';
 import '../features/library/models/music_file.dart';
 import '../features/preview/preview_screen.dart';
 import '../features/settings/about_screen.dart';
+import '../features/settings/crash_debug_screen.dart';
 import '../features/settings/settings_screen.dart';
 import '../features/workbench/workbench_screen.dart';
 
@@ -96,26 +97,44 @@ final router = GoRouter(
         );
       },
     ),
+    GoRoute(
+      path: '/crash-debug',
+      parentNavigatorKey: rootNavigatorKey,
+      builder: (context, state) => const CrashDebugScreen(),
+    ),
   ],
 );
 
-class _AppShell extends StatelessWidget {
+class _AppShell extends StatefulWidget {
   const _AppShell({required this.navigationShell});
 
   final StatefulNavigationShell navigationShell;
 
   @override
+  State<_AppShell> createState() => _AppShellState();
+}
+
+class _AppShellState extends State<_AppShell> {
+  static const _settingsIndex = 4;
+  static const _unlockTapCount = 7;
+  static const _unlockWindow = Duration(seconds: 4);
+
+  int _settingsTapCount = 0;
+  DateTime? _lastSettingsTap;
+
+  @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: navigationShell,
+      body: widget.navigationShell,
       floatingActionButton: const PlayerOverlayLauncherButton(),
       floatingActionButtonLocation: FloatingActionButtonLocation.endFloat,
       bottomNavigationBar: NavigationBar(
-        selectedIndex: navigationShell.currentIndex,
+        selectedIndex: widget.navigationShell.currentIndex,
         onDestinationSelected: (index) {
-          navigationShell.goBranch(
+          if (index == _settingsIndex) _onSettingsDestinationTapped();
+          widget.navigationShell.goBranch(
             index,
-            initialLocation: index == navigationShell.currentIndex,
+            initialLocation: index == widget.navigationShell.currentIndex,
           );
         },
         destinations: const [
@@ -147,5 +166,23 @@ class _AppShell extends StatelessWidget {
         ],
       ),
     );
+  }
+
+  void _onSettingsDestinationTapped() {
+    final now = DateTime.now();
+    if (_lastSettingsTap == null ||
+        now.difference(_lastSettingsTap!) > _unlockWindow) {
+      _settingsTapCount = 0;
+    }
+    _lastSettingsTap = now;
+    _settingsTapCount += 1;
+
+    if (_settingsTapCount >= _unlockTapCount) {
+      _settingsTapCount = 0;
+      _lastSettingsTap = null;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) context.push('/crash-debug');
+      });
+    }
   }
 }

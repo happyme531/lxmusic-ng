@@ -5,6 +5,8 @@ import android.content.Intent
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.system.Os
+import android.system.OsConstants
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.plugin.common.MethodCall
@@ -14,10 +16,18 @@ class MainActivity : FlutterActivity() {
     private var playerOverlayChannel: MethodChannel? = null
     private var accessibilityPlaybackChannel: MethodChannel? = null
     private var externalFileOpenChannel: MethodChannel? = null
+    private var crashTestChannel: MethodChannel? = null
+    private var crashReportChannel: MethodChannel? = null
+    private val crashReportPrompt by lazy { CrashReportPrompt(this) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         consumeExternalFileIntent(intent)
+    }
+
+    override fun onDestroy() {
+        crashReportPrompt.close()
+        super.onDestroy()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -53,6 +63,18 @@ class MainActivity : FlutterActivity() {
             channel.setMethodCallHandler(::handleExternalFileOpenCall)
             ExternalFileOpenCoordinator.attach(channel)
         }
+        crashTestChannel = MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            CRASH_TEST_CHANNEL,
+        ).also { channel ->
+            channel.setMethodCallHandler(::handleCrashTestCall)
+        }
+        crashReportChannel = MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            CRASH_REPORT_CHANNEL,
+        ).also { channel ->
+            channel.setMethodCallHandler(crashReportPrompt::handleCall)
+        }
     }
 
     override fun cleanUpFlutterEngine(flutterEngine: FlutterEngine) {
@@ -71,7 +93,31 @@ class MainActivity : FlutterActivity() {
             channel.setMethodCallHandler(null)
         }
         externalFileOpenChannel = null
+        crashTestChannel?.setMethodCallHandler(null)
+        crashTestChannel = null
+        crashReportChannel?.setMethodCallHandler(null)
+        crashReportChannel = null
         super.cleanUpFlutterEngine(flutterEngine)
+    }
+
+    private fun handleCrashTestCall(call: MethodCall, result: MethodChannel.Result) {
+        when (call.method) {
+            "crashKotlin" -> {
+                result.success(null)
+                window.decorView.post {
+                    throw IllegalStateException("LxMusic-NG manual Kotlin crash-report test")
+                }
+            }
+            "crashNativeSigsegv" -> {
+                result.success(null)
+                window.decorView.post {
+                    // Send a real fatal native signal so this test exercises
+                    // Sentry NDK, not the Flutter plugin's Java exception helper.
+                    Os.kill(android.os.Process.myPid(), OsConstants.SIGSEGV)
+                }
+            }
+            else -> result.notImplemented()
+        }
     }
 
     private fun consumeExternalFileIntent(intent: Intent?) {
@@ -267,5 +313,9 @@ class MainActivity : FlutterActivity() {
         const val LAST_TARGET_ORIENTATION_KEY = "last_target_orientation"
         const val LAST_TARGET_PROFILE_ID_KEY = "last_target_profile_id"
         const val LAST_TARGET_LAYOUT_ID_KEY = "last_target_layout_id"
+        const val CRASH_TEST_CHANNEL =
+            "dev.happyme531.clxmidiplayer.ng/crash_test"
+        const val CRASH_REPORT_CHANNEL =
+            "dev.happyme531.clxmidiplayer.ng/crash_report"
     }
 }

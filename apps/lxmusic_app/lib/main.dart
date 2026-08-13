@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter/services.dart';
+import 'package:sentry_flutter/sentry_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'app/router.dart';
@@ -16,9 +17,12 @@ import 'features/game_player/overlay/platform/player_overlay_bridge.dart';
 import 'features/game_player/overlay/platform/player_overlay_calibration_platform.dart';
 import 'features/library/library_screen.dart';
 import 'features/library/platform/external_file_open_platform.dart';
+import 'features/settings/crash_report_startup_prompt.dart';
 import 'features/workbench/providers/workbench_provider.dart';
 
-Future<void> main() async {
+Future<void> main() => _runWithLocalCrashCapture(_runMainApp);
+
+Future<void> _runMainApp() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   final bundle = await loadBundledYamlAssets();
@@ -43,7 +47,10 @@ Future<void> main() async {
 }
 
 @pragma('vm:entry-point')
-Future<void> playerOverlayMain() async {
+Future<void> playerOverlayMain() =>
+    _runWithLocalCrashCapture(_runPlayerOverlay);
+
+Future<void> _runPlayerOverlay() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   final bridge = MethodChannelPlayerOverlayBridge();
@@ -71,6 +78,29 @@ Future<void> playerOverlayMain() async {
   );
 }
 
+Future<void> _runWithLocalCrashCapture(
+  Future<void> Function() appRunner,
+) async {
+  if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) {
+    await appRunner();
+    return;
+  }
+
+  await SentryFlutter.init((options) {
+    // Android initializes the native SDK before Flutter and installs a
+    // local-only transport. This DSN only keeps Dart capture enabled.
+    options
+      ..dsn = 'https://local@localhost/1'
+      ..autoInitializeNativeSdk = false
+      ..enableAutoSessionTracking = false
+      ..enableAutoPerformanceTracing = false
+      ..enableNativeTraceSync = false
+      ..sendClientReports = false
+      ..sendDefaultPii = false
+      ..attachScreenshot = false;
+  }, appRunner: appRunner);
+}
+
 class LxMusicApp extends ConsumerStatefulWidget {
   const LxMusicApp({super.key});
 
@@ -92,6 +122,10 @@ class _LxMusicAppState extends ConsumerState<LxMusicApp> {
       platform.setFilesAvailableHandler(() async => _requestExternalDrain());
       WidgetsBinding.instance.addPostFrameCallback((_) {
         _requestExternalDrain();
+        final promptContext = rootNavigatorKey.currentContext;
+        if (promptContext != null) {
+          unawaited(CrashReportStartupPrompt.showIfNeeded(promptContext));
+        }
       });
     }
   }
