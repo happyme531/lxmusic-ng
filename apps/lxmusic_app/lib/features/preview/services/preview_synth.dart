@@ -6,6 +6,8 @@ import 'package:flutter_soloud/flutter_soloud.dart';
 abstract class PreviewSynthEngine {
   Future<void> initialize();
 
+  Future<void> prepare(Iterable<int> pitches);
+
   Future<void> playTone({
     required int pitch,
     required Duration duration,
@@ -28,8 +30,15 @@ abstract class PreviewSynthEngine {
 class SoloudPreviewSynthEngine implements PreviewSynthEngine {
   static const int _sampleRate = 44100;
   static const int _bufferSize = 1024;
-  static const int _maxActiveVoices = 48;
-  static const Duration _releaseDuration = Duration(milliseconds: 72);
+  static const int _maxActiveVoices = 64;
+  static const int _maxMusicalVoices = 32;
+  static const double _masterHeadroom = 0.62;
+  static const Duration _attackDuration = Duration(milliseconds: 6);
+  static const Duration _automaticReleaseDuration = Duration(milliseconds: 28);
+  static const Duration _manualReleaseDuration = Duration(milliseconds: 48);
+  static const Duration _stopAllReleaseDuration = Duration(milliseconds: 20);
+  static const Duration _voiceStealReleaseDuration = Duration(milliseconds: 12);
+  static const Duration _rebalanceDuration = Duration(milliseconds: 12);
   static const Duration _cleanupSlack = Duration(milliseconds: 40);
   static const WaveForm _waveform = WaveForm.triangle;
 
@@ -39,8 +48,11 @@ class SoloudPreviewSynthEngine implements PreviewSynthEngine {
       <int, Future<AudioSource>>{};
   final Map<Object, SoundHandle> _heldHandles = <Object, SoundHandle>{};
   final Set<SoundHandle> _activeHandles = <SoundHandle>{};
+  final Map<SoundHandle, double> _voiceBaseVolumes = <SoundHandle, double>{};
+  final Map<SoundHandle, Timer> _releaseTimers = <SoundHandle, Timer>{};
   final Map<SoundHandle, Timer> _cleanupTimers = <SoundHandle, Timer>{};
 
+  Bus? _mixBus;
   Future<void>? _initializeFuture;
   bool _initialized = false;
   bool _disposed = false;
@@ -59,7 +71,38 @@ class SoloudPreviewSynthEngine implements PreviewSynthEngine {
       channels: Channels.stereo,
     );
     _soloud.setMaxActiveVoiceCount(_maxActiveVoices);
+    _mixBus = _createMixBus();
     _initialized = true;
+  }
+
+  Bus? _createMixBus() {
+    Bus? bus;
+    try {
+      bus = _soloud.createMixingBus(name: 'preview');
+      final limiter = bus.filters.limiterFilter;
+      limiter.activate();
+      limiter.threshold().value = -6;
+      limiter.outputCeiling().value = -1;
+      limiter.kneeWidth().value = 3;
+      limiter.attackTime().value = 1;
+      limiter.releaseTime().value = 80;
+      bus.playOnEngine();
+      return bus;
+    } catch (_) {
+      try {
+        bus?.dispose();
+      } catch (_) {
+        // Headroom and voice balancing still protect the direct output path.
+      }
+      return null;
+    }
+  }
+
+  @override
+  Future<void> prepare(Iterable<int> pitches) async {
+    await initialize();
+    if (_disposed) return;
+    await Future.wait(pitches.toSet().map(_sourceForPitch));
   }
 
   @override
@@ -74,13 +117,17 @@ class SoloudPreviewSynthEngine implements PreviewSynthEngine {
     final source = await _sourceForPitch(pitch);
     if (_disposed) return;
 
-    final handle = _soloud.play(
+    final handle = _startHandle(
       source,
-      volume: _clampVolume(volume, pitch: pitch),
+      baseVolume: _clampVolume(volume, pitch: pitch),
     );
-    _trackHandle(handle);
-    _soloud.scheduleStop(handle, _effectiveDuration(duration));
-    _scheduleCleanup(handle, _effectiveDuration(duration) + _cleanupSlack);
+    final effectiveDuration = _effectiveDuration(duration);
+    final releaseDuration = _releaseDurationFor(effectiveDuration);
+    _scheduleRelease(
+      handle,
+      after: effectiveDuration - releaseDuration,
+      releaseDuration: releaseDuration,
+    );
   }
 
   @override
@@ -98,11 +145,10 @@ class SoloudPreviewSynthEngine implements PreviewSynthEngine {
     final source = await _sourceForPitch(pitch);
     if (_disposed) return;
 
-    final handle = _soloud.play(
+    final handle = _startHandle(
       source,
-      volume: _clampVolume(volume, pitch: pitch),
+      baseVolume: _clampVolume(volume, pitch: pitch),
     );
-    _trackHandle(handle);
     _heldHandles[token] = handle;
   }
 
@@ -112,11 +158,15 @@ class SoloudPreviewSynthEngine implements PreviewSynthEngine {
     if (handle == null) {
       return;
     }
-    _releaseHandle(handle);
+    _releaseHandle(handle, releaseDuration: _manualReleaseDuration);
   }
 
   @override
   Future<void> stopAll() async {
+    for (final timer in _releaseTimers.values) {
+      timer.cancel();
+    }
+    _releaseTimers.clear();
     for (final timer in _cleanupTimers.values) {
       timer.cancel();
     }
@@ -124,14 +174,20 @@ class SoloudPreviewSynthEngine implements PreviewSynthEngine {
 
     final handles = _activeHandles.toList(growable: false);
     _heldHandles.clear();
+    _voiceBaseVolumes.clear();
     _activeHandles.clear();
 
     for (final handle in handles) {
       try {
-        await _soloud.stop(handle);
+        _soloud.fadeVolume(handle, 0, _stopAllReleaseDuration);
+        _soloud.scheduleStop(handle, _stopAllReleaseDuration);
       } catch (_) {
         // The voice may already have ended by the time stopAll() runs.
       }
+    }
+    if (handles.isNotEmpty) {
+      await Future<void>.delayed(_stopAllReleaseDuration);
+      await Future.wait(handles.map(_stopSafely));
     }
   }
 
@@ -152,6 +208,12 @@ class SoloudPreviewSynthEngine implements PreviewSynthEngine {
           // Ignore already disposed sources during shutdown.
         }
       }
+      try {
+        _mixBus?.dispose();
+      } catch (_) {
+        // Ignore an already disposed bus during shutdown.
+      }
+      _mixBus = null;
       _soloud.deinit();
     }
 
@@ -185,21 +247,60 @@ class SoloudPreviewSynthEngine implements PreviewSynthEngine {
     }
   }
 
-  void _trackHandle(SoundHandle handle) {
-    _cleanupTimers.remove(handle)?.cancel();
-    _activeHandles.add(handle);
+  SoundHandle _startHandle(AudioSource source, {required double baseVolume}) {
+    _makeRoomForVoice();
+    final handle =
+        _mixBus?.play(source, volume: 0) ?? _soloud.play(source, volume: 0);
+    _trackHandle(handle, baseVolume: baseVolume);
+    _rebalanceVoices(newHandle: handle);
+    return handle;
   }
 
-  void _releaseHandle(SoundHandle handle) {
+  void _trackHandle(SoundHandle handle, {required double baseVolume}) {
+    _releaseTimers.remove(handle)?.cancel();
     _cleanupTimers.remove(handle)?.cancel();
+    _activeHandles.add(handle);
+    _voiceBaseVolumes[handle] = baseVolume;
+  }
+
+  void _makeRoomForVoice() {
+    if (_voiceBaseVolumes.length < _maxMusicalVoices) {
+      return;
+    }
+    _releaseHandle(
+      _voiceBaseVolumes.keys.first,
+      releaseDuration: _voiceStealReleaseDuration,
+    );
+  }
+
+  void _releaseHandle(SoundHandle handle, {required Duration releaseDuration}) {
+    _releaseTimers.remove(handle)?.cancel();
+    _cleanupTimers.remove(handle)?.cancel();
+    _heldHandles.removeWhere((_, heldHandle) => heldHandle == handle);
+    final wasBalancedVoice = _voiceBaseVolumes.remove(handle) != null;
+    if (wasBalancedVoice) {
+      _rebalanceVoices();
+    }
     try {
-      _soloud.fadeVolume(handle, 0, _releaseDuration);
-      _soloud.scheduleStop(handle, _releaseDuration);
+      _soloud.fadeVolume(handle, 0, releaseDuration);
+      _soloud.scheduleStop(handle, releaseDuration);
     } catch (_) {
       _activeHandles.remove(handle);
       return;
     }
-    _scheduleCleanup(handle, _releaseDuration + _cleanupSlack);
+    _scheduleCleanup(handle, releaseDuration + _cleanupSlack);
+  }
+
+  void _scheduleRelease(
+    SoundHandle handle, {
+    required Duration after,
+    required Duration releaseDuration,
+  }) {
+    _releaseTimers.remove(handle)?.cancel();
+    _releaseTimers[handle] = Timer(after, () {
+      _releaseTimers.remove(handle);
+      _releaseHandle(handle, releaseDuration: releaseDuration);
+    });
   }
 
   void _scheduleCleanup(SoundHandle handle, Duration after) {
@@ -207,7 +308,64 @@ class SoloudPreviewSynthEngine implements PreviewSynthEngine {
     _cleanupTimers[handle] = Timer(after, () {
       _cleanupTimers.remove(handle);
       _activeHandles.remove(handle);
+      _voiceBaseVolumes.remove(handle);
+      _heldHandles.removeWhere((_, heldHandle) => heldHandle == handle);
     });
+  }
+
+  void _rebalanceVoices({SoundHandle? newHandle}) {
+    final voiceCount = _voiceBaseVolumes.length;
+    if (voiceCount == 0) {
+      return;
+    }
+    final gain = _polyphonyGain(voiceCount);
+    final staleHandles = <SoundHandle>[];
+    for (final entry in _voiceBaseVolumes.entries) {
+      try {
+        _soloud.fadeVolume(
+          entry.key,
+          entry.value * gain,
+          entry.key == newHandle ? _attackDuration : _rebalanceDuration,
+        );
+      } catch (_) {
+        staleHandles.add(entry.key);
+      }
+    }
+    for (final handle in staleHandles) {
+      _voiceBaseVolumes.remove(handle);
+      _activeHandles.remove(handle);
+      _releaseTimers.remove(handle)?.cancel();
+      _cleanupTimers.remove(handle)?.cancel();
+      _heldHandles.removeWhere((_, heldHandle) => heldHandle == handle);
+    }
+  }
+
+  double _polyphonyGain(int voiceCount) {
+    if (voiceCount <= 4) {
+      return 1;
+    }
+    return math.sqrt(4 / voiceCount).clamp(0.35, 1.0);
+  }
+
+  Duration _releaseDurationFor(Duration totalDuration) {
+    final adaptiveMilliseconds = math.max(
+      10,
+      totalDuration.inMilliseconds ~/ 3,
+    );
+    return Duration(
+      milliseconds: math.min(
+        _automaticReleaseDuration.inMilliseconds,
+        adaptiveMilliseconds,
+      ),
+    );
+  }
+
+  Future<void> _stopSafely(SoundHandle handle) async {
+    try {
+      await _soloud.stop(handle);
+    } catch (_) {
+      // The scheduled stop may already have completed.
+    }
   }
 
   Duration _effectiveDuration(Duration requested) {
@@ -218,7 +376,7 @@ class SoloudPreviewSynthEngine implements PreviewSynthEngine {
 
   double _clampVolume(double volume, {required int pitch}) {
     final compensation = _pitchCompensation(pitch);
-    return (volume * compensation).clamp(0.0, 0.42);
+    return (volume * compensation * _masterHeadroom).clamp(0.0, 0.28);
   }
 
   double _pitchCompensation(int pitch) {

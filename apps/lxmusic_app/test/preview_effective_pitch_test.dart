@@ -55,6 +55,11 @@ void main() {
 
       final notes = buildPreviewLaneNotes(
         score: score,
+        semanticPlan: _previewPlan(
+          score: score,
+          variant: variant,
+          layout: layout,
+        ),
         variant: variant,
         layout: layout,
       );
@@ -95,6 +100,12 @@ void main() {
 
     final notes = buildPreviewLaneNotes(
       score: score,
+      semanticPlan: _previewPlan(
+        score: score,
+        variant: variant,
+        layout: layout,
+        customPitchToKeyId: const <int, String>{64: 'B5'},
+      ),
       variant: variant,
       layout: layout,
       customPitchToKeyId: const <int, String>{64: 'B5'},
@@ -143,6 +154,11 @@ void main() {
 
     final notes = buildPreviewLaneNotes(
       score: score,
+      semanticPlan: _previewPlan(
+        score: score,
+        variant: variant,
+        layout: layout,
+      ),
       variant: variant,
       layout: layout,
     );
@@ -190,6 +206,12 @@ void main() {
 
     final notes = buildPreviewLaneNotes(
       score: score,
+      semanticPlan: _previewPlan(
+        score: score,
+        variant: variant,
+        layout: layout,
+        customPitchToKeyId: const <int, String>{64: 'B5'},
+      ),
       variant: variant,
       layout: layout,
       customPitchToKeyId: const <int, String>{64: 'B5'},
@@ -225,12 +247,66 @@ void main() {
 
     final notes = buildPreviewLaneNotes(
       score: score,
+      semanticPlan: _previewPlan(
+        score: score,
+        variant: variant,
+        layout: layout,
+      ),
       variant: variant,
       layout: layout,
     );
 
     expect(notes.single.keyId, 'C4');
     expect(notes.single.pitch, 60);
+  });
+
+  test('preview timeline follows semantic-plan merging and throttling', () {
+    const variant = InstrumentVariant(
+      id: 'default',
+      displayName: 'Default',
+      noteDurationMode: NoteDurationMode.none,
+    );
+    const layout = KeyLayout(
+      id: 'aliased',
+      algorithm: LayoutAlgorithm.explicit,
+      keys: <KeyDefinition>[
+        KeyDefinition(id: 'C4', pitch: 60, normX: 0.5, normY: 0.5),
+      ],
+      pitchToKeyId: <int, String>{60: 'C4', 61: 'C4'},
+    );
+    const score = Score(
+      format: SourceFormat.jsonScore,
+      tracks: <Track>[
+        Track(
+          name: 'Main',
+          channel: 0,
+          notes: <NoteEvent>[
+            NoteEvent(pitch: 60, startMs: 0, durationMs: 100, velocity: 50),
+            NoteEvent(pitch: 61, startMs: 0, durationMs: 180, velocity: 110),
+            NoteEvent(pitch: 60, startMs: 20, durationMs: 100, velocity: 90),
+          ],
+        ),
+      ],
+    );
+    final semanticPlan = _previewPlan(
+      score: score,
+      variant: variant,
+      layout: layout,
+      sameKeyMinIntervalMs: 50,
+    );
+
+    final notes = buildPreviewLaneNotes(
+      score: score,
+      semanticPlan: semanticPlan,
+      variant: variant,
+      layout: layout,
+    );
+
+    expect(notes, hasLength(1));
+    expect(notes.single.pitch, 60);
+    expect(notes.single.startMs, 0);
+    expect(notes.single.durationMs, 180);
+    expect(notes.single.velocity, 110);
   });
 
   test('manual preview disables keys outside the variant range', () {
@@ -256,4 +332,29 @@ void main() {
       isNull,
     );
   });
+}
+
+SemanticPlan _previewPlan({
+  required Score score,
+  required InstrumentVariant variant,
+  required KeyLayout layout,
+  Map<int, String>? customPitchToKeyId,
+  int sameKeyMinIntervalMs = 0,
+}) {
+  return const PerformancePlanner().plan(
+    score,
+    PlanningContext(
+      profile: GameProfile(
+        id: 'preview-test',
+        displayName: 'Preview Test',
+        packageNameHints: <String>[],
+        layouts: <LayoutBinding>[],
+        variants: <InstrumentVariant>[],
+        sameKeyMinIntervalMs: sameKeyMinIntervalMs,
+      ),
+      layout: layout,
+      variant: variant,
+      customPitchToKeyId: customPitchToKeyId,
+    ),
+  );
 }

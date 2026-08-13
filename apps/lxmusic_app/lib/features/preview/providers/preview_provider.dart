@@ -59,6 +59,7 @@ final previewLaneNotesProvider =
     Provider.family<List<PreviewLaneNote>, PreviewSessionData>((ref, session) {
       return buildPreviewLaneNotes(
         score: session.transformedScore,
+        semanticPlan: session.semanticPlan,
         variant: session.variant,
         layout: session.layout,
         customPitchToKeyId: resolveCustomPitchToKeyId(session.config.steps),
@@ -68,6 +69,7 @@ final previewLaneNotesProvider =
 @visibleForTesting
 List<PreviewLaneNote> buildPreviewLaneNotes({
   required Score score,
+  required SemanticPlan semanticPlan,
   required InstrumentVariant variant,
   required KeyLayout layout,
   Map<int, String>? customPitchToKeyId,
@@ -84,7 +86,8 @@ List<PreviewLaneNote> buildPreviewLaneNotes({
     }
   }
   final playableKeyIds = playablePitchToKeyId.values.toSet();
-  final notes = <PreviewLaneNote>[];
+  final candidatesByAction =
+      <({int startMs, String keyId}), _PreviewCandidate>{};
   for (final track in score.tracks) {
     for (final note in track.notes) {
       final keyId = customPitchToKeyId == null
@@ -93,26 +96,53 @@ List<PreviewLaneNote> buildPreviewLaneNotes({
       if (keyId == null || !playableKeyIds.contains(keyId)) {
         continue;
       }
+      final actionKey = (startMs: note.startMs, keyId: keyId);
+      final existing = candidatesByAction[actionKey];
+      if (existing == null || note.velocity > existing.velocity) {
+        candidatesByAction[actionKey] = _PreviewCandidate(
+          sourcePitch: note.pitch,
+          velocity: note.velocity,
+        );
+      }
+    }
+  }
+
+  final notes = <PreviewLaneNote>[];
+  for (final action in semanticPlan.actions) {
+    for (final keyId in action.keyIds) {
+      final candidate =
+          candidatesByAction[(startMs: action.atMs, keyId: keyId)];
+      if (candidate == null) {
+        continue;
+      }
       final nominalPitch = nominalPitchByKeyId[keyId];
       final previewPitch = nominalPitch == null
-          ? note.pitch
+          ? candidate.sourcePitch
           : variant.effectivePitchForLayoutPitch(nominalPitch);
-      final rawDuration = note.durationMs ?? 0;
-      final effectiveDuration = rawDuration <= 0
+      final rawDuration = action.durationMsForKey(keyId);
+      final effectiveDuration = rawDuration == null || rawDuration <= 0
           ? _previewFallbackPointDurationMs
           : rawDuration;
       notes.add(
         PreviewLaneNote(
           keyId: keyId,
           pitch: previewPitch,
-          startMs: note.startMs,
+          startMs: action.atMs,
           durationMs: effectiveDuration,
-          velocity: note.velocity,
-          isPoint: rawDuration <= 0 || rawDuration <= _previewPointThresholdMs,
+          velocity: candidate.velocity,
+          isPoint:
+              rawDuration == null || rawDuration <= _previewPointThresholdMs,
         ),
       );
     }
   }
   notes.sort((a, b) => a.startMs.compareTo(b.startMs));
   return notes;
+}
+
+class _PreviewCandidate {
+  const _PreviewCandidate({required this.sourcePitch, required this.velocity});
+
+  final int sourcePitch;
+  final int velocity;
 }

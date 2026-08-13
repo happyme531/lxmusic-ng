@@ -423,6 +423,7 @@ class _PreviewScreenState extends ConsumerState<PreviewScreen> {
   }) async {
     try {
       await _synth.initialize();
+      await _synth.prepare(laneNotes.map((note) => note.pitch));
       _audioError = null;
     } catch (error) {
       setState(() {
