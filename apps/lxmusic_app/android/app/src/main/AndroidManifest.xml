@@ -4,6 +4,7 @@
     <application
         android:label="新·留香音乐盒"
         android:name=".LxMusicApplication"
+        android:largeHeap="true"
         android:icon="@mipmap/ic_launcher">
         <activity
             android:name=".MainActivity"
