@@ -967,7 +967,6 @@ class _GamePlayerCatalog {
         if (!playlist.isBuiltinFavorite) playlist,
     ];
     if (canReuseTracks &&
-        previous != null &&
         _sameObjects(
           previous._sourceVisiblePlaylists,
           _sourceVisiblePlaylists,

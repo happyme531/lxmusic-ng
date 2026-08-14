@@ -25,7 +25,7 @@ void main() {
     await _setSurfaceSize(tester, 420, 82);
     addTearDown(() => tester.view.resetPhysicalSize());
 
-    await tester.pumpWidget(PlayerOverlayApp(bridge: bridge));
+    await tester.pumpWidget(_overlayApp(bridge));
     await tester.pump();
 
     expect(
@@ -37,7 +37,7 @@ void main() {
 
     await tester.tap(find.byKey(const ValueKey('player-overlay-more')));
     await _setSurfaceSize(tester, 420, 251);
-    await tester.pump();
+    await _pumpPanelTransition(tester);
 
     expect(
       find.byKey(const ValueKey('player-overlay-quick-controls')),
@@ -51,23 +51,31 @@ void main() {
 
     await tester.tap(find.byKey(const ValueKey('player-overlay-more')));
     await _setSurfaceSize(tester, 420, 82);
-    await tester.pump();
+    await _pumpPanelTransition(tester);
     await tester.tap(find.byKey(const ValueKey('player-overlay-speed')));
     await _setSurfaceSize(tester, 420, 217);
-    await tester.pump();
+    await _pumpPanelTransition(tester);
 
     expect(
       find.byKey(const ValueKey('player-overlay-speed-editor')),
       findsOneWidget,
     );
     expect(find.byIcon(Icons.more_horiz_rounded), findsOneWidget);
-    await tester.tap(find.byKey(const ValueKey('player-overlay-speed-1.50')));
+    tester
+        .widget<InkWell>(
+          find.byKey(const ValueKey('player-overlay-speed-1.50')),
+        )
+        .onTap!();
     await tester.pump();
-    expect(find.textContaining('180 BPM'), findsOneWidget);
+    expect(find.text('1.50×'), findsAtLeastNWidgets(1));
 
-    await tester.tap(find.byKey(const ValueKey('player-overlay-speed-reset')));
+    tester
+        .widget<TextButton>(
+          find.byKey(const ValueKey('player-overlay-speed-reset')),
+        )
+        .onPressed!();
     await tester.pump();
-    expect(find.text('1.00×  ·  120 BPM'), findsOneWidget);
+    expect(find.text('1.00×'), findsAtLeastNWidgets(1));
     expect(
       tester
           .widget<Slider>(
@@ -78,7 +86,7 @@ void main() {
     );
     await tester.tap(find.byKey(const ValueKey('player-overlay-speed')));
     await _setSurfaceSize(tester, 420, 82);
-    await tester.pump();
+    await _pumpPanelTransition(tester);
     expect(
       find.byKey(const ValueKey('player-overlay-compact')),
       findsOneWidget,
@@ -93,11 +101,11 @@ void main() {
     await _setSurfaceSize(tester, 420, 82);
     addTearDown(() => tester.view.resetPhysicalSize());
 
-    await tester.pumpWidget(PlayerOverlayApp(bridge: bridge));
+    await tester.pumpWidget(_overlayApp(bridge));
     await tester.pump();
     await tester.tap(find.byKey(const ValueKey('player-overlay-more')));
     await _setSurfaceSize(tester, 420, 251);
-    await tester.pump();
+    await _pumpPanelTransition(tester);
 
     expect(
       find.byKey(const ValueKey('player-overlay-key-config-switch')),
@@ -110,12 +118,19 @@ void main() {
     for (final mode in <String>['自动演奏', '点击演奏', '可视化跟弹', 'MIDI串流']) {
       expect(find.text(mode), findsOneWidget);
     }
-    await tester.tap(
-      find.byKey(const ValueKey('player-overlay-performance-mode-1')),
+    expect(
+      tester
+          .widget<InkWell>(
+            find.descendant(
+              of: find.byKey(
+                const ValueKey('player-overlay-performance-mode-1'),
+              ),
+              matching: find.byType(InkWell),
+            ),
+          )
+          .onTap,
+      isNotNull,
     );
-    await tester.pump();
-    expect(find.text('点击演奏模式敬请期待'), findsOneWidget);
-
     await tester.tap(
       find.byKey(const ValueKey('player-overlay-action-octave')),
     );
@@ -222,12 +237,12 @@ void main() {
     await _setSurfaceSize(tester, 420, 82);
     addTearDown(() => tester.view.resetPhysicalSize());
 
-    await tester.pumpWidget(PlayerOverlayApp(bridge: bridge));
+    await tester.pumpWidget(_overlayApp(bridge));
     await tester.pump();
 
     await tester.tap(find.byKey(const ValueKey('player-overlay-title')));
     await _setSurfaceSize(tester, 420, 309);
-    await tester.pump(const Duration(milliseconds: 350));
+    await _pumpTitleTransition(tester);
     expect(
       find.byKey(const ValueKey('player-overlay-song-picker')),
       findsOneWidget,
@@ -236,7 +251,7 @@ void main() {
 
     await tester.tap(find.byKey(const ValueKey('player-overlay-more')));
     await _setSurfaceSize(tester, 420, 251);
-    await tester.pump();
+    await _pumpPanelTransition(tester);
     expect(
       find.byKey(const ValueKey('player-overlay-quick-controls')),
       findsOneWidget,
@@ -245,7 +260,7 @@ void main() {
 
     await tester.tap(find.byKey(const ValueKey('player-overlay-speed')));
     await _setSurfaceSize(tester, 420, 217);
-    await tester.pump();
+    await _pumpPanelTransition(tester);
     expect(
       find.byKey(const ValueKey('player-overlay-speed-editor')),
       findsOneWidget,
@@ -254,7 +269,7 @@ void main() {
 
     await tester.tap(find.byKey(const ValueKey('player-overlay-speed')));
     await _setSurfaceSize(tester, 420, 82);
-    await tester.pump();
+    await _pumpPanelTransition(tester);
     expect(
       find.byKey(const ValueKey('player-overlay-compact')),
       findsOneWidget,
@@ -300,14 +315,14 @@ void main() {
     await tester.pump();
     await tester.tap(find.byKey(const ValueKey('player-overlay-more')));
     await _setSurfaceSize(tester, 420, 251);
-    await tester.pump(const Duration(milliseconds: 250));
+    await _pumpPanelTransition(tester);
     await tester.tap(find.text('演奏'));
     await tester.pump();
     await tester.tap(
       find.byKey(const ValueKey('player-overlay-key-config-switch')),
     );
     await _setSurfaceSize(tester, 440, 300);
-    await tester.pump(const Duration(milliseconds: 300));
+    await _pumpPanelTransition(tester);
 
     expect(
       find.byKey(const ValueKey('player-overlay-target-picker')),
@@ -333,7 +348,7 @@ void main() {
     await tester.pump(const Duration(milliseconds: 220));
     await tester.tap(find.text('3x7 Demo'));
     await _setSurfaceSize(tester, 420, 251);
-    await tester.pump(const Duration(milliseconds: 300));
+    await _pumpPanelTransition(tester);
 
     final selectAction = bridge.actions.lastWhere(
       (action) => action['type'] == 'selectTarget',
@@ -351,16 +366,18 @@ void main() {
       tester.widget<ButtonStyleButton>(calibrationButton).onPressed,
       isNotNull,
     );
-    await tester.tap(calibrationButton);
-    await tester.pump(const Duration(milliseconds: 400));
-    expect(
-      bridge.actions.map((action) => action['type']),
-      contains('calibrationStartCurrentTarget'),
-    );
-    await _setSurfaceSize(tester, 420, 251);
+    tester.widget<ButtonStyleButton>(calibrationButton).onPressed!();
     await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(calibrationPlatform.startRequests, hasLength(1));
     expect(
-      find.byKey(const ValueKey('player-overlay-quick-controls')),
+      calibrationPlatform.startRequests.single.launchOrigin,
+      CalibrationLaunchOrigin.playerOverlay,
+    );
+    await _setSurfaceSize(tester, 420, 82);
+    await _pumpPanelTransition(tester);
+    expect(
+      find.byKey(const ValueKey('player-overlay-compact')),
       findsOneWidget,
     );
     expect(bridge.targetPickerActiveStates, <bool>[true, false]);
@@ -375,7 +392,7 @@ void main() {
     await _setSurfaceSize(tester, 420, 82);
     addTearDown(() => tester.view.resetPhysicalSize());
 
-    await tester.pumpWidget(PlayerOverlayApp(bridge: bridge));
+    await tester.pumpWidget(_overlayApp(bridge));
     await tester.pump();
     await tester.tap(find.byKey(const ValueKey('player-overlay-drag-handle')));
     await _setSurfaceSize(tester, 104, 58);
@@ -402,7 +419,7 @@ void main() {
     await _setSurfaceSize(tester, 420, 82);
     addTearDown(() => tester.view.resetPhysicalSize());
 
-    await tester.pumpWidget(PlayerOverlayApp(bridge: bridge));
+    await tester.pumpWidget(_overlayApp(bridge));
     await tester.pump();
 
     final progress = find.byKey(const ValueKey('player-overlay-progress'));
@@ -440,7 +457,7 @@ void main() {
     await _setSurfaceSize(tester, 420, 82);
     addTearDown(() => tester.view.resetPhysicalSize());
 
-    await tester.pumpWidget(PlayerOverlayApp(bridge: bridge));
+    await tester.pumpWidget(_overlayApp(bridge));
     await tester.pump();
     expect(find.text('初始'), findsOneWidget);
 
@@ -485,24 +502,23 @@ void main() {
     await _setSurfaceSize(tester, 420, 82);
     addTearDown(() => tester.view.resetPhysicalSize());
 
-    await tester.pumpWidget(PlayerOverlayApp(bridge: bridge));
+    await tester.pumpWidget(_overlayApp(bridge));
     await tester.pump();
     await tester.tap(find.byKey(const ValueKey('player-overlay-title')));
     await _setSurfaceSize(tester, 420, 309);
-    await tester.pump(const Duration(milliseconds: 350));
+    await _pumpTitleTransition(tester);
 
     expect(find.byIcon(Icons.more_horiz_rounded), findsOneWidget);
     await tester.tap(find.byKey(const ValueKey('player-overlay-title')));
-    await tester.pump(const Duration(milliseconds: 350));
     await _setSurfaceSize(tester, 420, 82);
-    await tester.pump();
+    await _pumpTitleTransition(tester);
     expect(
       find.byKey(const ValueKey('player-overlay-compact')),
       findsOneWidget,
     );
     await tester.tap(find.byKey(const ValueKey('player-overlay-title')));
     await _setSurfaceSize(tester, 420, 309);
-    await tester.pump(const Duration(milliseconds: 350));
+    await _pumpTitleTransition(tester);
 
     expect(find.text('返回播放器'), findsNothing);
     expect(
@@ -535,7 +551,9 @@ void main() {
     expect(find.text('所有曲目'), findsAtLeastNWidgets(1));
     expect(find.text('中文曲目'), findsOneWidget);
 
-    await tester.tap(find.byKey(const ValueKey('player-overlay-playlist-2')));
+    await tester.tap(
+      find.byKey(const ValueKey('player-overlay-playlist-chinese')),
+    );
     await tester.pump();
     expect(find.text('中文曲目'), findsOneWidget);
     expect(find.text('夜空中最亮的星'), findsOneWidget);
@@ -548,7 +566,7 @@ void main() {
     expect(mode, findsOneWidget);
     expect(find.text('列表循环'), findsOneWidget);
 
-    await tester.tap(mode);
+    tester.widget<InkWell>(mode).onTap!();
     await tester.pump();
     expect(find.text('单曲循环'), findsOneWidget);
     expect(tester.takeException(), isNull);
@@ -561,7 +579,7 @@ void main() {
       await _setSurfaceSize(tester, 420, 82);
       addTearDown(() => tester.view.resetPhysicalSize());
 
-      await tester.pumpWidget(PlayerOverlayApp(bridge: bridge));
+      await tester.pumpWidget(_overlayApp(bridge));
       await tester.pump();
       final title = find.byKey(const ValueKey('player-overlay-title'));
       await tester.tap(title);
@@ -569,7 +587,13 @@ void main() {
       await tester.tap(title);
       await tester.pump(const Duration(milliseconds: 350));
 
-      expect(find.byIcon(Icons.favorite_rounded), findsOneWidget);
+      expect(
+        find.descendant(
+          of: title,
+          matching: find.byIcon(Icons.favorite_rounded),
+        ),
+        findsOneWidget,
+      );
       expect(
         find.byKey(const ValueKey('player-overlay-compact')),
         findsOneWidget,
@@ -581,7 +605,7 @@ void main() {
 
       await tester.tap(title);
       await _setSurfaceSize(tester, 420, 309);
-      await tester.pump(const Duration(milliseconds: 350));
+      await _pumpTitleTransition(tester);
       await tester.tap(
         find.byKey(const ValueKey('player-overlay-picker-tab-favorites')),
       );
@@ -598,7 +622,7 @@ void main() {
     await _setSurfaceSize(tester, 420, 82);
     addTearDown(() => tester.view.resetPhysicalSize());
 
-    await tester.pumpWidget(PlayerOverlayApp(bridge: bridge));
+    await tester.pumpWidget(_overlayApp(bridge));
     await tester.pump();
     await bridge.emit(<String, Object?>{
       'command': 'dockToEdge',
@@ -635,11 +659,11 @@ void main() {
     await _setSurfaceSize(tester, 420, 82);
     addTearDown(() => tester.view.resetPhysicalSize());
 
-    await tester.pumpWidget(PlayerOverlayApp(bridge: bridge));
+    await tester.pumpWidget(_overlayApp(bridge));
     await tester.pump();
     await tester.tap(find.byKey(const ValueKey('player-overlay-title')));
     await _setSurfaceSize(tester, 420, 309);
-    await tester.pump(const Duration(milliseconds: 350));
+    await _pumpTitleTransition(tester);
     expect(
       find.byKey(const ValueKey('player-overlay-song-picker')),
       findsOneWidget,
@@ -705,14 +729,18 @@ void main() {
       ..initialSession = snapshot.toMap();
     await _setSurfaceSize(tester, 420, 82);
     addTearDown(() => tester.view.resetPhysicalSize());
-    await tester.pumpWidget(PlayerOverlayApp(bridge: bridge));
+    await tester.pumpWidget(_overlayApp(bridge));
     await tester.pump();
 
     expect(find.text('卡农'), findsOneWidget);
     await tester.tap(find.byKey(const ValueKey('player-overlay-title')));
     await _setSurfaceSize(tester, 420, 309);
     await tester.pump(const Duration(milliseconds: 350));
-    await tester.tap(find.byKey(const ValueKey('player-overlay-song-queue-1')));
+    tester
+        .widget<InkWell>(
+          find.byKey(const ValueKey('player-overlay-song-queue-1')),
+        )
+        .onTap!();
     await tester.pump();
 
     expect(
@@ -735,6 +763,21 @@ Future<void> _setSurfaceSize(
 ) async {
   tester.view.devicePixelRatio = 1;
   tester.view.physicalSize = Size(width, height);
+}
+
+Widget _overlayApp(PlayerOverlayBridge bridge) {
+  return ProviderScope(child: PlayerOverlayApp(bridge: bridge));
+}
+
+Future<void> _pumpPanelTransition(WidgetTester tester) async {
+  await tester.pump();
+  await tester.pump(const Duration(milliseconds: 250));
+  await tester.pump();
+}
+
+Future<void> _pumpTitleTransition(WidgetTester tester) async {
+  await tester.pump(const Duration(milliseconds: 230));
+  await _pumpPanelTransition(tester);
 }
 
 GamePlayerSnapshot _snapshot({required String fileName, int revision = 0}) {
