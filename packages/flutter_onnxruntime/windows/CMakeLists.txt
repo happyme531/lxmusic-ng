@@ -68,8 +68,11 @@ if(NOT USE_SYSTEM_ONNXRUNTIME)
   # Debug output
   message(STATUS "ONNX Runtime version set to: ${ONNXRUNTIME_VERSION}")
 
-  # Determine architecture for download URL
-  if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+  # Determine architecture for download URL. Both x64 and ARM64 are 64-bit,
+  # so pointer size alone cannot distinguish them.
+  if(CMAKE_GENERATOR_PLATFORM STREQUAL "ARM64" OR CMAKE_SYSTEM_PROCESSOR MATCHES "^(ARM64|arm64|aarch64)$")
+    set(ONNXRUNTIME_ARCH "arm64")
+  elseif(CMAKE_SIZEOF_VOID_P EQUAL 8)
     set(ONNXRUNTIME_ARCH "x64")
   else()
     set(ONNXRUNTIME_ARCH "x86")
